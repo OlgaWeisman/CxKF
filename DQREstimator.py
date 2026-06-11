@@ -1090,8 +1090,14 @@ class DQREstimator:
         _, dim_y, T_y = y_train.shape
 
         m = self.num_u
-        angles = torch.arange(m, device=device) * (2 * torch.pi / m) + torch.pi / (2 * m)
-        u_list = torch.stack([torch.cos(angles), torch.sin(angles)], dim=1)
+        u_list = torch.randn(m, dim_y, device=device)
+
+        u_list = u_list / torch.norm(
+            u_list,
+            dim=1,
+            keepdim=True
+        )
+
 
         self.u_list = u_list
         num_u_actual = u_list.shape[0]
@@ -1157,7 +1163,9 @@ class DQREstimator:
             ep_train_loss = []
 
             for x_batch, y_batch in loader:
-                hat_q_low, hat_q_high, _ = compute_gaussian_quantiles(x_batch[:,:2], x_batch[:,2:3]**2,tau /2)
+                x_sigma = x_batch[:,dim_y:,:].reshape(x_batch.shape[0], dim_y, dim_y, x_batch.shape[2])**2
+                diag = torch.diagonal(x_sigma, dim1=1, dim2=2).permute(0, 2, 1)
+                hat_q_low, hat_q_high, _ = compute_gaussian_quantiles(x_batch[:,:dim_y], diag,tau /2)
                 hat_q_low = torch.as_tensor(hat_q_low, device=x_train.device, dtype=x_train.dtype)
                 self.optimizer.zero_grad()
 
@@ -1191,7 +1199,9 @@ class DQREstimator:
             self.model.eval()
             with torch.no_grad():
                 val_losses_t = []
-                hat_q_low, hat_q_high, _ = compute_gaussian_quantiles(x_val[:,:2], x_val[:,2:3]**2,tau /2)
+                x_sigma = x_val[:,dim_y:,:].reshape(x_val.shape[0], dim_y, dim_y, x_val.shape[2])**2
+                diag = torch.diagonal(x_sigma, dim1=1, dim2=2).permute(0, 2, 1)
+                hat_q_low, hat_q_high, _ = compute_gaussian_quantiles(x_val[:,:dim_y], diag,tau /2)
                 hat_q_low = torch.as_tensor(hat_q_low, device=x_val.device, dtype=x_val.dtype)
                 for t in range(T):
                     x_val_t = x_val[:, :, t]
@@ -1741,8 +1751,7 @@ class DQREstimator:
                                           x,
                                           y,
                                           z_grid,
-                                          stride,
-                                          plot_flag):
+                                          stride):
 
         device = self.device
 
@@ -1767,54 +1776,54 @@ class DQREstimator:
 
         covered_area = torch.ceil(z_grid_width*z_grid_height*(len(z_in_region)/len(z_grid)))
 
-        if plot_flag:
-
-            # ---------- Convert y to numpy ----------
-            if isinstance(y, torch.Tensor):
-                y_plot = y.detach().cpu().numpy().squeeze()
-            else:
-                y_plot = np.asarray(y).squeeze()
-
-            # ---------- Plot ----------
-            plt.figure(figsize=(8, 8))
-
-            # All grid points
-            plt.scatter(
-                z_grid[:, 0],
-                z_grid[:, 1],
-                s=5,
-                alpha=0.2,
-                label='Grid'
-            )
-
-            # Points inside region
-            plt.scatter(
-                z_in_region[:, 0],
-                z_in_region[:, 1],
-                s=20,
-                color='green',
-                label='In Region'
-            )
-
-            # True point
-            plt.scatter(
-                y_plot[0],
-                y_plot[1],
-                s=250,
-                color='red',
-                marker='*',
-                edgecolors='black',
-                label='y'
-            )
-
-            plt.xlabel('x')
-            plt.ylabel('y')
-            plt.title('Prediction Region')
-            plt.legend()
-            plt.axis('equal')
-            plt.grid(True)
-
-            plt.show()
+        # if plot_flag:
+        #
+        #     # ---------- Convert y to numpy ----------
+        #     if isinstance(y, torch.Tensor):
+        #         y_plot = y.detach().cpu().numpy().squeeze()
+        #     else:
+        #         y_plot = np.asarray(y).squeeze()
+        #
+        #     # ---------- Plot ----------
+        #     plt.figure(figsize=(8, 8))
+        #
+        #     # All grid points
+        #     plt.scatter(
+        #         z_grid[:, 0],
+        #         z_grid[:, 1],
+        #         s=5,
+        #         alpha=0.2,
+        #         label='Grid'
+        #     )
+        #
+        #     # Points inside region
+        #     plt.scatter(
+        #         z_in_region[:, 0],
+        #         z_in_region[:, 1],
+        #         s=20,
+        #         color='green',
+        #         label='In Region'
+        #     )
+        #
+        #     # True point
+        #     plt.scatter(
+        #         y_plot[0],
+        #         y_plot[1],
+        #         s=250,
+        #         color='red',
+        #         marker='*',
+        #         edgecolors='black',
+        #         label='y'
+        #     )
+        #
+        #     plt.xlabel('x')
+        #     plt.ylabel('y')
+        #     plt.title('Prediction Region')
+        #     plt.legend()
+        #     plt.axis('equal')
+        #     plt.grid(True)
+        #
+        #     plt.show()
         return (
             covered_area,
             y_in_region_mask
@@ -2095,7 +2104,7 @@ class DQREstimator:
 
         return 1 - mean_cal_cov, mean_total_covered_area
 
-    def inference_new(self, x_test, y_test, y_train, before_cal_flag=False,plot_flag = False):
+    def inference_new(self, x_test, y_test, y_train, before_cal_flag=False):
         if before_cal_flag:
             self.lambda_hat = torch.tensor(0.0)
         device = self.device
@@ -2128,8 +2137,7 @@ class DQREstimator:
                 x[i].unsqueeze(0),
                 y_test[i].unsqueeze(0),
                 z_grid,
-                stride,
-                plot_flag
+                stride
             )
 
         error = 1 - in_region.mean()
