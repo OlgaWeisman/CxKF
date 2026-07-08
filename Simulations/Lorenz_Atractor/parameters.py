@@ -66,7 +66,7 @@ H_design_inv = torch.inverse(H_design)
 # Noise Parameters
 r_dB = 0
 lambda_r = math.sqrt(10**(-r_dB/10))
-nx = 0
+nx = 1
 lambda_q = lambda_r * nx
 
 # Noise Matrices

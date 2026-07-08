@@ -16,6 +16,7 @@ from matplotlib.patches import Ellipse
 from scipy.stats import chi2
 from CP_test import compute_gaussian_quantiles
 from scipy.stats import norm
+import os
 
 import numpy as np
 import matplotlib.pyplot as plt
@@ -1778,55 +1779,56 @@ class DQREstimator:
 
         # if plot_flag:
         #
-        #     # ---------- Convert y to numpy ----------
-        #     if isinstance(y, torch.Tensor):
-        #         y_plot = y.detach().cpu().numpy().squeeze()
-        #     else:
-        #         y_plot = np.asarray(y).squeeze()
-        #
-        #     # ---------- Plot ----------
-        #     plt.figure(figsize=(8, 8))
-        #
-        #     # All grid points
-        #     plt.scatter(
-        #         z_grid[:, 0],
-        #         z_grid[:, 1],
-        #         s=5,
-        #         alpha=0.2,
-        #         label='Grid'
-        #     )
-        #
-        #     # Points inside region
-        #     plt.scatter(
-        #         z_in_region[:, 0],
-        #         z_in_region[:, 1],
-        #         s=20,
-        #         color='green',
-        #         label='In Region'
-        #     )
-        #
-        #     # True point
-        #     plt.scatter(
-        #         y_plot[0],
-        #         y_plot[1],
-        #         s=250,
-        #         color='red',
-        #         marker='*',
-        #         edgecolors='black',
-        #         label='y'
-        #     )
-        #
-        #     plt.xlabel('x')
-        #     plt.ylabel('y')
-        #     plt.title('Prediction Region')
-        #     plt.legend()
-        #     plt.axis('equal')
-        #     plt.grid(True)
-        #
-        #     plt.show()
+# # ---------- Convert y to numpy ----------
+# if isinstance(y, torch.Tensor):
+#    y_plot = y.detach().cpu().numpy().squeeze()
+# else:
+#    y_plot = np.asarray(y).squeeze()
+#
+# # ---------- Plot ----------
+# plt.figure(figsize=(8, 8))
+#
+# # All grid points
+# plt.scatter(
+#     z_grid[:, 0],
+#     z_grid[:, 1],
+#     s=5,
+#     alpha=0.2,
+#     label='Grid'
+#     )
+#
+# # Points inside region
+# plt.scatter(
+#     z_in_region[:, 0],
+#     z_in_region[:, 1],
+#     s=20,
+#     color='green',
+#     label='In Region'
+#     )
+#
+# # True point
+# plt.scatter(
+#     y_plot[0],
+#     y_plot[1],
+#     s=250,
+#     color='red',
+#     marker='*',
+#     edgecolors='black',
+#     label='y'
+#     )
+#
+# plt.xlabel('x')
+# plt.ylabel('y')
+# plt.title('Prediction Region')
+# plt.legend()
+# plt.axis('equal')
+# plt.grid(True)
+#
+# plt.show()
         return (
             covered_area,
-            y_in_region_mask
+            y_in_region_mask,
+            z_in_region_mask
         )
     def calibrate_crc(self, X_cal, y_cal,alpha):
         """
@@ -1834,12 +1836,12 @@ class DQREstimator:
 
         We want empirical risk <= alpha - B / n
         """
-        self.B = 1
-        n = len(y_cal)
-        threshold = alpha - self.B / n
+        # self.B = 1
+        # n = len(y_cal)
+        # threshold = alpha - self.B / n
 
-        if threshold < 0:
-            raise ValueError("Calibration set is too small for this alpha and B.")
+        # if threshold < 0:
+        #     raise ValueError("Calibration set is too small for this alpha and B.")
 
         y_pred = self.model(X_cal)
 
@@ -1852,19 +1854,23 @@ class DQREstimator:
         lambda_candidates, _ = torch.sort(
             (y_pred - Y_ui).max(dim=1).values
         )
-        lambda_candidates = torch.linspace(lambda_candidates.min(), lambda_candidates.max(), 1000)
-        i=0
-        for lam in lambda_candidates:
-            lower_cal = y_pred - lam
-            risk = (Y_ui < lower_cal).any(dim=1).float().mean()
-
-            if risk <= threshold:
-                self.lambda_hat = lam
-                return lam
-            i = i+1
-
-        # If no lambda satisfies it, use the largest one
-        self.lambda_hat = lambda_candidates[-1]
+        # lambda_candidates = torch.linspace(lambda_candidates.min(), lambda_candidates.max(), 1000)
+        # i=0
+        # for lam in lambda_candidates:
+        #     lower_cal = y_pred - lam
+        #     risk = (Y_ui < lower_cal).any(dim=1).float().mean()
+        #
+        #     if risk <= threshold:
+        #         self.lambda_hat = lam
+        #         return lam
+        #     i = i+1
+        # for lambda for Traj
+        lambda_candidates_per_t = lambda_candidates
+        index = int(np.ceil((1 - alpha) * (lambda_candidates.shape[0] + 1))) - 1
+        index = min(max(index, 0), lambda_candidates.shape[0] - 1)
+        self.lambda_hat = lambda_candidates[index]
+        # # If no lambda satisfies it, use the largest one
+        # self.lambda_hat = lambda_candidates[-1]
         return self.lambda_hat
 
     def calibrate_ellip_crc(self,x_hat, y_cal):
@@ -1885,23 +1891,26 @@ class DQREstimator:
                 Sigma_cal
             )
 
-            residuals = dist - self.model.r0
-            candidate_lambdas = torch.linspace(residuals.min(), residuals.max(), 1000)
-
-            for lam in candidate_lambdas:
-
-                radius = self.model.r0 + lam
-
-                risk = (
-                        dist > radius
-                ).float().mean()
-
-                if risk <= threshold:
-                    self.lambda_hat = lam
-
-                    return lam
-
-            self.lambda_hat = candidate_lambdas[-1]
+            residuals = torch.sort(dist - self.model.r0).values
+            index = int(np.ceil((1 - self.model.alpha) * (residuals.shape[0] + 1))) - 1
+            index = min(max(index, 0), residuals.shape[0] - 1)
+            self.lambda_hat = residuals[index]
+            # candidate_lambdas = torch.linspace(residuals.min(), residuals.max(), 1000)
+            #
+            # for lam in candidate_lambdas:
+            #
+            #     radius = self.model.r0 + lam
+            #
+            #     risk = (
+            #             dist > radius
+            #     ).float().mean()
+            #
+            #     if risk <= threshold:
+            #         self.lambda_hat = lam
+            #
+            #         return lam
+            #
+            # self.lambda_hat = candidate_lambdas[-1]
 
             return self.lambda_hat
     def calibrate(self, x_cal, y_cal, y_train, T, tau):
@@ -2130,19 +2139,51 @@ class DQREstimator:
 
         covered_area = torch.zeros(n, device=device)
         in_region = torch.zeros(n, device=device)
-
+        s = torch.zeros(n, device=device)
         for i in tqdm(range(n)):
             (covered_area[i],
-             in_region[i]) = self.get_distance_from_quantile_region_new(
+             in_region[i], z_in_mask) = self.get_distance_from_quantile_region_new(
                 x[i].unsqueeze(0),
                 y_test[i].unsqueeze(0),
                 z_grid,
                 stride
             )
+        #     if i == 0:
+        #         z_in_region = z_grid[z_in_mask]
+        # if not before_cal_flag:
+        #     save_dir = "inference_containers"
+        #     os.makedirs(save_dir, exist_ok=True)
+        #     model_str = str(self.model)
+        #
+        #     if "<lambda>" in model_str:
+        #         model_name = "rec"
+        #         model_name = f"{model_name}_{self.u_list.shape[0]}"
+        #     else:
+        #         if hasattr(self.model, "mahalanobis_distance"):
+        #             model_name = f"{str(self.model).split('(')[0]}"
+        #         else:
+        #             model_name = f"{str(self.model).split('(')[0]}_{self.u_list.shape[0]}"
+        #
+        #
+        #     save_path = os.path.join(save_dir, f"{model_name}_inference_container.pt")
+        #
+        #     torch.save(
+        #         {
+        #             "model_name": model_name,
+        #             "z_in_region": z_in_region.detach().cpu(),
+        #             "z_grid": z_grid.detach().cpu(),
+        #             "x0": x[0].detach().cpu(),
+        #             "y0": y_test[0].detach().cpu(),
+        #         },
+        #         save_path
+        #     )
+        #
+        #     print(f"Saved {save_path}")
 
-        error = 1 - in_region.mean()
+        error = (1 - in_region).mean()
+        s = 1 - in_region
         mean_total_covered_area = covered_area.mean()
-        return error, mean_total_covered_area
+        return error, mean_total_covered_area, s
     # -----------------------
     # INFERENCE
     # -----------------------

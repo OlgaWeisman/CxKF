@@ -20,6 +20,7 @@ target_path = base_dir / "timeParamCPScores-master" / "timeParamCPScores-master"
 sys.path.append(str(target_path))
 
 from gurobipyTutorial import optimzeTimeAlphasKKTNoMaxLowerBound, optimzeTimeAlphasKKT, optimzeTimeAlphasKKTNoMaxLowerBoundMinArea
+from CQR_training import AllQuantileRegressor
 # from DistSplit import DistSplit
 def compute_gaussian_quantiles(x_array_train, sigma_array_train,alpha):
     mu_hat = x_array_train
@@ -39,13 +40,14 @@ def metric_calculation(curr_test_target, intervals):
     w = intervals
     return c, s, w
 
-def clalibration_residual_quantiles(train_KF_output_long, train_target_long ,q_low,q_hi, J_T, alpha, title_value, q_half,q_low_aT,q_hi_aT,snr):
+def clalibration_residual_quantiles(train_KF_output_long, train_Sigma_KF_output_long,train_target_long ,q_low,q_hi, J_T, alpha, title_value, q_half,q_low_aT,q_hi_aT,snr,scenario,train_cqr_input,train_cqr_target):
     plot_flag = True
     # List of algorithms
-    algorithms = ["CQR", "Gaussian only"]#["CQR", "Gaussian only"]##["CQR", "Gaussian only", "CQR_max", "CQR_alpha", "time-series non Union", "CQR_r", "dist-split"]
+    algorithms = ["CQR_trained","CQR", "Gaussian only", "CQR_max", "CQKF-Bonf-sw","Gaussian only long"]#["CQR", "Gaussian only"]##["CQR", "Gaussian only", "CQR_max", "CQR_alpha", "time-series non Union", "CQR_r", "dist-split"]
     #loop on trails
     train_KF_output = train_KF_output_long[:1000, :]
     train_target = train_target_long[:1000, :]
+    train_Sigma_KF_output = train_Sigma_KF_output_long[:1000, :]
     T = train_KF_output.shape[1]
     # 20% testing 80% calibration
     num_of_calib = int(np.ceil(train_KF_output.size(0) * 0.8))
@@ -58,6 +60,10 @@ def clalibration_residual_quantiles(train_KF_output_long, train_target_long ,q_l
     c = np.empty([J_T, num_of_tests, T])
     s = np.empty([J_T, num_of_tests])
     w = np.empty([J_T, num_of_tests, T, 2])
+
+    c_trained = np.empty([J_T, num_of_tests, T])
+    s_trained = np.empty([J_T, num_of_tests])
+    w_trained = np.empty([J_T, num_of_tests, T, 2])
 
     c_long = np.empty([J_T, num_of_tests_long, T])
     s_long = np.empty([J_T, num_of_tests_long])
@@ -134,6 +140,41 @@ def clalibration_residual_quantiles(train_KF_output_long, train_target_long ,q_l
             if "q" in v.varName:
                 # print(v.x)
                 print("obj: " + str(v.x))
+    if "CQR_trained" in algorithms:
+
+
+        quantiles = [alpha / 2, 1 - alpha / 2]
+
+        # Train on calibration/training trajectories
+        x_train_cqr = train_cqr_input#.numpy().reshape(-1, 1)
+        y_train_cqr = train_cqr_target#.numpy().reshape(-1)
+
+        cqr_model = AllQuantileRegressor(
+            quantiles=quantiles,
+            in_shape=x_train_cqr.shape[1],
+            hidden_size=64,
+            dropout=0.1,
+            lr=1e-3,
+            target_coverage=1 - alpha,
+        )
+
+        cqr_model.fit(
+            x_train_cqr,
+            y_train_cqr,
+            epochs=1000,
+            batch_size=128,
+            verbose=True,
+        )
+        if train_Sigma_KF_output.dim() < 3:
+            train_Sigma_KF_output = train_Sigma_KF_output.unsqueeze(1)
+        # Predict quantiles for all trajectories
+        _, pred_quantiles = cqr_model.predict(
+            torch.cat([train_KF_output.unsqueeze(1),train_Sigma_KF_output], dim=1)
+        )
+
+        q_low_trained = pred_quantiles[:, 0, :]
+
+        q_hi_trained = pred_quantiles[:, 1]
 
 
     for j in range(J_T):
@@ -162,11 +203,15 @@ def clalibration_residual_quantiles(train_KF_output_long, train_target_long ,q_l
         curr_q_hi = q_hi[shuffled_idx]
         curr_q_half = q_half[shuffled_idx]
 
+
         curr_train_output = curr_output[:num_of_calib]
         curr_train_target = curr_target[:num_of_calib]
         curr_train_q_low = curr_q_low[:num_of_calib]
         curr_train_q_hi = curr_q_hi[:num_of_calib]
         curr_train_q_half = curr_q_half[:num_of_calib]
+
+        curr_train_q_low_trained = q_low_trained[:num_of_calib]
+        curr_train_q_hi_trained = q_hi_trained[:num_of_calib]
 
         curr_test_output = curr_output[num_of_calib:]
         curr_test_target = curr_target[num_of_calib:]
@@ -174,6 +219,8 @@ def clalibration_residual_quantiles(train_KF_output_long, train_target_long ,q_l
         curr_test_q_hi = curr_q_hi[num_of_calib:]
         curr_test_q_half = curr_q_half[num_of_calib:]
 
+        curr_test_q_low_trained = q_low_trained[num_of_calib:]
+        curr_test_q_hi_trained = q_hi_trained[num_of_calib:]
 
         # For general calculation
         error_low = curr_train_q_low - curr_train_target.squeeze().numpy()
@@ -185,6 +232,13 @@ def clalibration_residual_quantiles(train_KF_output_long, train_target_long ,q_l
         index = int(np.ceil((1 - alpha) * (nc.shape[0] + 1))) - 1
         index = min(max(index, 0), nc.shape[0] - 1)
 
+        # for trained CQR
+        error_low_trained = curr_train_q_low_trained - curr_train_target.squeeze().numpy()
+        error_high_trained = curr_train_target.squeeze().numpy() - curr_train_q_hi_trained
+        err_trained = np.maximum(error_high_trained, error_low_trained)
+        cal_scores_trained = {0: np.sort(err_trained, 0)[::-1]}
+        nc_trained = np.sort(cal_scores_trained[0], 0)
+
         # For long general calculation
         error_low_long = curr_train_q_low_long - curr_train_target_long.squeeze().numpy()
         error_high_long = curr_train_target_long.squeeze().numpy() - curr_train_q_hi_long
@@ -195,8 +249,15 @@ def clalibration_residual_quantiles(train_KF_output_long, train_target_long ,q_l
         index_long = int(np.ceil((1 - alpha/T) * (nc_long.shape[0] + 1))) - 1
         index_long = min(max(index_long, 0), nc_long.shape[0] - 1)
         # CQR
-        if "CQR" in algorithms:
+        if "CQR_trained" in algorithms:
 
+            test_err = np.vstack([nc_trained[index, :], nc_trained[index, :]])
+            intervals_cqr_trained = np.zeros((num_of_tests, T, 2))
+            intervals_cqr_trained[:, :, 0] = curr_test_q_low_trained - np.tile(test_err[0, :], (num_of_tests, 1))
+            intervals_cqr_trained[:, :, 1] = curr_test_q_hi_trained + np.tile(test_err[1, :], (num_of_tests, 1))
+            # Calculate metric result
+            [c_trained[j], s_trained[j], w_trained[j]] = metric_calculation(curr_test_target, intervals_cqr_trained)
+        if "CQR" in algorithms:
             test_err = np.vstack([nc[index, :], nc[index, :]])
             intervals = np.zeros((num_of_tests, T, 2))
             intervals[:, :, 0] = curr_test_q_low - np.tile(test_err[0, :], (num_of_tests, 1))
@@ -404,6 +465,10 @@ def clalibration_residual_quantiles(train_KF_output_long, train_target_long ,q_l
     s_mean = np.mean(s)*100
     w_mean = np.mean(np.mean(np.diff(w), 1), 0)
 
+    c_mean_trained = np.mean(np.mean(c_trained, 1), 0)*100
+    s_mean_trained = np.mean(s_trained)*100
+    w_mean_trained = np.mean(np.mean(np.diff(w_trained), 1), 0)
+
     c_mean_long = np.mean(np.mean(c_long, 1), 0)*100
     s_mean_long = np.mean(s_long)*100
     w_mean_long = np.mean(np.mean(np.diff(w_long), 1), 0)
@@ -428,7 +493,7 @@ def clalibration_residual_quantiles(train_KF_output_long, train_target_long ,q_l
     s_dist_split_mean = np.mean(s_dist_split)*100
     w_dist_split_mean = np.mean(np.mean(np.diff(w_dist_split),1), 0)
     ## Insert to file
-    writer = ScenarioMetricsWriter(scenario="non-Gauss", outdir="outputs")
+    writer = ScenarioMetricsWriter(scenario=scenario, outdir="outputs")
     writer.append(algo="CQKF-TjW", snr_db=snr,
                   C_mean=c_ts_mean.mean(), C_svd=c_ts_mean.std(), S=s_ts_mean, WI_mean=w_ts_mean.mean(), WI_svd=w_ts_mean.std())
     writer.append(algo="CQKF-sw", snr_db=snr,
@@ -460,6 +525,9 @@ def clalibration_residual_quantiles(train_KF_output_long, train_target_long ,q_l
     if "CQR" in algorithms:
         mean_pr_cqr = s_mean
         plt.plot(c_mean,marker='o', label=f'CQKF-sw (TrjFail={mean_pr_cqr:.3f} %)')
+    if "CQR_trained" in algorithms:
+        mean_pr_cqr_trained = s_mean_trained
+        plt.plot(c_mean_trained,marker='o', label=f'CQKF-trained-sw (TrjFail={mean_pr_cqr_trained:.3f} %)')
     if "CQKF-Bonf-sw" in algorithms:
         mean_pr_cqr = s_mean_long
         plt.plot(c_mean_long, label=f'CQKF-Bonf-sw (TrjFail={mean_pr_cqr:.3f} %)')
@@ -495,6 +563,9 @@ def clalibration_residual_quantiles(train_KF_output_long, train_target_long ,q_l
     if "CQR" in algorithms:
         mean_pr_cqr = w_mean.mean()
         plt.plot(w_mean,marker='o', label=f'CQKF-sw (mean width={mean_pr_cqr:.3f})')
+    if "CQR_trained" in algorithms:
+        mean_pr_cqr_trained = w_mean_trained.mean()
+        plt.plot(w_mean_trained,marker='o', label=f'CQKF-trained-w (mean width={mean_pr_cqr_trained:.3f})')
     if "CQKF-Bonf-sw" in algorithms:
         mean_pr_cqr = w_mean_long.mean()
         plt.plot(w_mean_long, label=f'CQKF-Bonf-sw (mean width={mean_pr_cqr:.3f})')

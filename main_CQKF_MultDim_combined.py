@@ -13,8 +13,10 @@ from mahalanobis_elliptical_region_no_learning import MahalanobisEllipticalRegio
 # ======================================================
 # User configuration
 # ======================================================
-scenario = "lorenz"   # options: "linear", "nonlinear", "lorenz"
-model_type = "UKF"       # options: "KF", "EKF", "UKF"
+scenario = "linear"   # options: "linear", "nonlinear", "lorenz"
+model_type = "KF"       # options: "KF", "EKF", "UKF"
+
+use_train_and_calib_for_no_learning = True
 
 T = 10
 T_test = 10
@@ -115,6 +117,88 @@ os.makedirs(path_model, exist_ok=True)
 # ======================================================
 # Helpers
 # ======================================================
+def plot_inference_regions(save_dir="inference_containers"):
+
+    files = sorted(
+        [f for f in os.listdir(save_dir) if f.endswith(".pt")]
+    )
+
+    plt.figure(figsize=(8, 8))
+
+    first = True
+
+    for file in files:
+
+        data = torch.load(os.path.join(save_dir, file), map_location="cpu")
+
+        model_name = data["model_name"]
+        z_grid = data["z_grid"].numpy()
+        z_in_region = data["z_in_region"].numpy()
+        x = data["x0"].squeeze().numpy()
+        y = data["y0"].squeeze().numpy()
+
+        # Plot grid only once
+        if first:
+            plt.scatter(
+                z_grid[:, 0],
+                z_grid[:, 1],
+                s=5,
+                color="lightgray",
+                alpha=0.15,
+                label="Grid",
+            )
+            first = False
+
+        # Prediction region
+        plt.scatter(
+            z_in_region[:, 0],
+            z_in_region[:, 1],
+            s=10,
+            alpha=0.12,
+            label=model_name,
+        )
+
+    # Estimated point
+    plt.scatter(
+        x[0],
+        x[1],
+        s=180,
+        marker="*",
+        color="red",
+        edgecolors="black",
+        linewidths=1.2,
+        label="Estimated",
+        zorder=10,
+    )
+
+    # Target point
+    plt.scatter(
+        y[0],
+        y[1],
+        s=180,
+        marker="*",
+        color="limegreen",
+        edgecolors="black",
+        linewidths=1.2,
+        label="Target",
+        zorder=10,
+    )
+
+    plt.xlabel(r"$x_1$", fontsize=14)
+    plt.ylabel(r"$x_2$", fontsize=14)
+    plt.title("Prediction Regions", fontsize=16)
+    plt.axis("equal")
+    plt.grid(True)
+
+    # Legend
+    leg = plt.legend(markerscale=1.3, fontsize=12)
+
+    # Make legend markers opaque
+    for handle in leg.legend_handles:
+        handle.set_alpha(1)
+
+    plt.tight_layout()
+    plt.show()
 def make_rectangular_directions(d: int) -> torch.Tensor:
     """Create directions [e1, -e1, e2, -e2, ...] for rectangular no-learning model."""
     directions = []
@@ -254,34 +338,42 @@ for index in range(len(r2)):
     x_array_train, sigma_array_train, x_array_cv, sigma_array_cv, x_array_test, sigma_array_test = get_filter_outputs(
         sys_model, train_input, train_target, cv_input, cv_target, test_input, test_target
     )
-
+    N = x_array_test.shape[0]
+    Test_samples = int(test_target.shape[0]*0.2)
     # -----------------------------
     # Storage
     # -----------------------------
     error_NPDQR = torch.empty(T, Epochs_num)
     IW_NPQR = torch.empty(T, Epochs_num)
+    s_dqr = torch.empty(Test_samples, T, Epochs_num)
     error_NPDQR_before_cal = torch.empty(T, Epochs_num)
     IW_NPQR_before_cal = torch.empty(T, Epochs_num)
+    s_dqr_before_cal = torch.empty(Test_samples, T, Epochs_num)
 
     error_NPDQR_small = torch.empty(T, Epochs_num)
     IW_NPQR_small = torch.empty(T, Epochs_num)
+    s_dqr_small = torch.empty(Test_samples, T, Epochs_num)
     error_NPDQR_small_before_cal = torch.empty(T, Epochs_num)
     IW_NPQR_small_before_cal = torch.empty(T, Epochs_num)
+    s_dqr_small_before_cal = torch.empty(Test_samples, T, Epochs_num)
 
     error_rect = torch.empty(T, Epochs_num)
     IW_rect = torch.empty(T, Epochs_num)
+    s_rect = torch.empty(Test_samples, T, Epochs_num)
     error_rect_before_cal = torch.empty(T, Epochs_num)
     IW_rect_before_cal = torch.empty(T, Epochs_num)
+    s_rect_before_cal = torch.empty(Test_samples, T, Epochs_num)
 
     error_elip_crc = torch.empty(T, Epochs_num)
     IW_elip_crc = torch.empty(T, Epochs_num)
+    s_elip = torch.empty(Test_samples, T, Epochs_num)
     error_elip_crc_before_cal = torch.empty(T, Epochs_num)
     IW_elip_crc_before_cal = torch.empty(T, Epochs_num)
-
+    s_elip_before_cal = torch.empty(Test_samples, T, Epochs_num)
     # -----------------------------
     # DQR inputs
     # -----------------------------
-    N = x_array_test.shape[0]
+
     x_input_train = torch.cat(
         [x_array_train, torch.sqrt(sigma_array_train.flatten(start_dim=1, end_dim=2))],
         dim=1,
@@ -470,88 +562,121 @@ for index in range(len(r2)):
 
             # DQR
             dqr.calibrate_crc(x_input_calib_per_t, target_x_calib[:, :, t], alpha)
-            error_NPDQR[t, epochs], IW_NPQR[t, epochs] = dqr.inference_new(
+            error_NPDQR[t, epochs], IW_NPQR[t, epochs],s_dqr[:, t, epochs] = dqr.inference_new(
                 x_input_test_per_t, target_x_test[:, :, t], target_x_test[:, :, t], False
             )
-            error_NPDQR_before_cal[t, epochs], IW_NPQR_before_cal[t, epochs] = dqr.inference_new(
+            error_NPDQR_before_cal[t, epochs], IW_NPQR_before_cal[t, epochs], s_dqr_before_cal[:, t, epochs] = dqr.inference_new(
                 x_input_test_per_t, target_x_test[:, :, t], target_x_test[:, :, t], True
             )
 
             # Small DQR
             dqr_small.calibrate_crc(x_input_calib_per_t, target_x_calib[:, :, t], alpha)
-            error_NPDQR_small[t, epochs], IW_NPQR_small[t, epochs] = dqr_small.inference_new(
+            error_NPDQR_small[t, epochs], IW_NPQR_small[t, epochs], s_dqr_small[:, t, epochs]  = dqr_small.inference_new(
                 x_input_test_per_t, target_x_test[:, :, t], target_x_test[:, :, t], False
             )
-            error_NPDQR_small_before_cal[t, epochs], IW_NPQR_small_before_cal[t, epochs] = dqr_small.inference_new(
+            error_NPDQR_small_before_cal[t, epochs], IW_NPQR_small_before_cal[t, epochs], s_dqr_small_before_cal[:, t, epochs] = dqr_small.inference_new(
                 x_input_test_per_t, target_x_test[:, :, t], target_x_test[:, :, t], True
             )
+            if use_train_and_calib_for_no_learning:
+
+                x_input_rect_elip = torch.cat(
+                    [x_input_train[:, :, t], x_input_calib_per_t],
+                    dim=0
+                )
+
+                target_rect_elip = torch.cat(
+                    [train_target[:, :, t], target_x_calib[:, :, t]],
+                    dim=0
+                )
+
+            else:
+
+                x_input_rect_elip = x_input_calib_per_t
+                target_rect_elip = target_x_calib[:, :, t]
 
             # Rectangular no-learning
-            dqr_rect.calibrate_crc(x_input_calib_per_t, target_x_calib[:, :, t], alpha)
-            error_rect[t, epochs], IW_rect[t, epochs] = dqr_rect.inference_new(
+            dqr_rect.calibrate_crc(
+                x_input_rect_elip,
+                target_rect_elip,
+                alpha
+            )
+            error_rect[t, epochs], IW_rect[t, epochs], s_rect[:, t, epochs] = dqr_rect.inference_new(
                 x_input_test_per_t, target_x_test[:, :, t], target_x_test[:, :, t], False
             )
-            error_rect_before_cal[t, epochs], IW_rect_before_cal[t, epochs] = dqr_rect.inference_new(
+            error_rect_before_cal[t, epochs], IW_rect_before_cal[t, epochs], s_rect_before_cal[:, t, epochs] = dqr_rect.inference_new(
                 x_input_test_per_t, target_x_test[:, :, t], target_x_test[:, :, t], True
             )
 
             # Elliptical no-learning
-            dqr_elip.calibrate_ellip_crc(x_input_calib_per_t, target_x_calib[:, :, t])
-            error_elip_crc[t, epochs], IW_elip_crc[t, epochs] = dqr_elip.inference_new(
+            dqr_elip.calibrate_ellip_crc(
+                x_input_rect_elip,
+                target_rect_elip
+            )
+            error_elip_crc[t, epochs], IW_elip_crc[t, epochs], s_elip[:, t, epochs] = dqr_elip.inference_new(
                 x_input_test_per_t, target_x_test[:, :, t], target_x_test[:, :, t], False
             )
-            error_elip_crc_before_cal[t, epochs], IW_elip_crc_before_cal[t, epochs] = dqr_elip.inference_new(
+            error_elip_crc_before_cal[t, epochs], IW_elip_crc_before_cal[t, epochs], s_elip_before_cal[:, t, epochs] = dqr_elip.inference_new(
                 x_input_test_per_t, target_x_test[:, :, t], target_x_test[:, :, t], True
             )
+            # if epochs == 0:
+            #     plot_inference_regions("inference_containers")
 
     # ======================================================
     # Average over epochs
     # ======================================================
+
     error_NPDQR = error_NPDQR.mean(dim=1)
     IW_NPQR = IW_NPQR.mean(dim=1)
+    Traj_failure_dqr = s_dqr.sum(dim=1).mean()
     error_NPDQR_before_cal = error_NPDQR_before_cal.mean(dim=1)
     IW_NPQR_before_cal = IW_NPQR_before_cal.mean(dim=1)
-
+    Traj_failure_dqr_before_cal = s_dqr_before_cal.sum(dim=1).mean()
     error_NPDQR_small = error_NPDQR_small.mean(dim=1)
     IW_NPQR_small = IW_NPQR_small.mean(dim=1)
+    Traj_failure_dqr_small = s_dqr_small.sum(dim=1).mean()
     error_NPDQR_small_before_cal = error_NPDQR_small_before_cal.mean(dim=1)
     IW_NPQR_small_before_cal = IW_NPQR_small_before_cal.mean(dim=1)
-
+    Traj_failure_dqr_small_before_cal = s_dqr_small_before_cal.sum(dim=1).mean()
     error_rect = error_rect.mean(dim=1)
     IW_rect = IW_rect.mean(dim=1)
+    Traj_failure_rect = s_rect.sum(dim=1).mean()
     error_rect_before_cal = error_rect_before_cal.mean(dim=1)
     IW_rect_before_cal = IW_rect_before_cal.mean(dim=1)
-
+    Traj_failure_rect_before_cal = s_rect_before_cal.sum(dim=1).mean()
     error_elip_crc = error_elip_crc.mean(dim=1)
     IW_elip_crc = IW_elip_crc.mean(dim=1)
+    Traj_failure_elip = s_elip.sum(dim=1).mean()
     error_elip_crc_before_cal = error_elip_crc_before_cal.mean(dim=1)
     IW_elip_crc_before_cal = IW_elip_crc_before_cal.mean(dim=1)
-
+    Traj_failure_elip_before_cal = s_elip_before_cal.sum(dim=1).mean()
     # ======================================================
     # Convert to numpy
     # ======================================================
     err_dqr = torch.as_tensor(error_NPDQR).cpu().numpy()
     iw_dqr = torch.as_tensor(IW_NPQR).cpu().numpy()
+    traj_dqr = torch.as_tensor(Traj_failure_dqr).cpu().item()
     err_dqr_before = torch.as_tensor(error_NPDQR_before_cal).cpu().numpy()
     iw_dqr_before = torch.as_tensor(IW_NPQR_before_cal).cpu().numpy()
-
+    traj_dqr_before = torch.as_tensor(Traj_failure_dqr_before_cal).cpu().item()
     err_dqr_small = torch.as_tensor(error_NPDQR_small).cpu().numpy()
     iw_dqr_small = torch.as_tensor(IW_NPQR_small).cpu().numpy()
+    traj_dqr_small = torch.as_tensor(Traj_failure_dqr_small).cpu().item()
     err_dqr_small_before = torch.as_tensor(error_NPDQR_small_before_cal).cpu().numpy()
     iw_dqr_small_before = torch.as_tensor(IW_NPQR_small_before_cal).cpu().numpy()
-
+    traj_dqr_small_before = torch.as_tensor(Traj_failure_dqr_small_before_cal).cpu().item()
     err_rect = torch.as_tensor(error_rect).cpu().numpy()
     iw_rect = torch.as_tensor(IW_rect).cpu().numpy()
+    traj_rect = torch.as_tensor(Traj_failure_rect).cpu().item()
     err_rect_before = torch.as_tensor(error_rect_before_cal).cpu().numpy()
     iw_rect_before = torch.as_tensor(IW_rect_before_cal).cpu().numpy()
-
+    traj_rect_before = torch.as_tensor(Traj_failure_rect_before_cal).cpu().item()
     err_elip = torch.as_tensor(error_elip_crc).cpu().numpy()
     iw_elip = torch.as_tensor(IW_elip_crc).cpu().numpy()
+    traj_elip = torch.as_tensor(Traj_failure_elip).cpu().item()
     err_elip_before = torch.as_tensor(error_elip_crc_before_cal).cpu().numpy()
     iw_elip_before = torch.as_tensor(IW_elip_crc_before_cal).cpu().numpy()
-
+    traj_elip_before = torch.as_tensor(Traj_failure_elip_before_cal).cpu().item()
     t_axis = np.arange(len(err_dqr))
-
     # ======================================================
     # Plot error
     # ======================================================
@@ -573,24 +698,55 @@ for index in range(len(r2)):
     plt.savefig(f"error_vs_time_{scenario}_{model_type}.png", dpi=200)
     plt.show()
     plt.close()
-
     # ======================================================
     # Plot coverage area
     # ======================================================
     plt.figure(figsize=(12, 6))
-    plt.plot(t_axis, iw_dqr, color="green", linewidth=2, label="NP-DQR")
-    plt.plot(t_axis, iw_dqr_before, color="green", linestyle="--", linewidth=2, label="NP-DQR Before Calibration")
-    plt.plot(t_axis, iw_dqr_small, color="red", linewidth=2, label="NP-DQR Small")
-    plt.plot(t_axis, iw_dqr_small_before, color="red", linestyle="--", linewidth=2, label="NP-DQR Small Before Calibration")
-    plt.plot(t_axis, iw_rect, color="orange", linewidth=2, label="Rectangular")
-    plt.plot(t_axis, iw_rect_before, color="orange", linestyle="--", linewidth=2, label="Rectangular Before Calibration")
-    plt.plot(t_axis, iw_elip, color="blue", linewidth=2, label="Elliptical")
-    plt.plot(t_axis, iw_elip_before, color="blue", linestyle="--", linewidth=2, label="Elliptical Before Calibration")
+    plt.plot(
+        t_axis, iw_dqr,
+        color="green", linewidth=2,
+        label=f"NP-DQR | Traj failure={traj_dqr:.4f}"
+    )
+    plt.plot(
+        t_axis, iw_dqr_before,
+        color="green", linestyle="--", linewidth=2,
+        label=f"NP-DQR Before Cal | Traj failure={traj_dqr_before:.4f}"
+    )
+    plt.plot(
+        t_axis, iw_dqr_small,
+        color="red", linewidth=2,
+        label=f"NP-DQR Small | Traj failure={traj_dqr_small:.4f}"
+    )
+    plt.plot(
+        t_axis, iw_dqr_small_before,
+        color="red", linestyle="--", linewidth=2,
+        label=f"NP-DQR Small Before Cal | Traj failure={traj_dqr_small_before:.4f}"
+    )
+    plt.plot(
+        t_axis, iw_rect,
+        color="orange", linewidth=2,
+        label=f"Rectangular | Traj failure={traj_rect:.4f}"
+    )
+    plt.plot(
+        t_axis, iw_rect_before,
+        color="orange", linestyle="--", linewidth=2,
+        label=f"Rectangular Before Cal | Traj failure={traj_rect_before:.4f}"
+    )
+    plt.plot(
+        t_axis, iw_elip,
+        color="blue", linewidth=2,
+        label=f"Elliptical | Traj failure={traj_elip:.4f}"
+    )
+    plt.plot(
+        t_axis, iw_elip_before,
+        color="blue", linestyle="--", linewidth=2,
+        label=f"Elliptical Before Cal | Traj failure={traj_elip_before:.4f}"
+    )
     plt.xlabel("Time step t")
     plt.ylabel("Coverage Area")
     plt.title(f"Coverage Area vs Time - {scenario} - {model_type}")
     plt.grid(True)
-    plt.legend()
+    plt.legend(fontsize=8)
     plt.tight_layout()
     plt.savefig(f"coverage_vs_time_{scenario}_{model_type}.png", dpi=200)
     plt.show()

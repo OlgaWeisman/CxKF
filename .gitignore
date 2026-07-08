@@ -7,3 +7,4 @@ wandb/
 *.pth
 *.png
 outputs/.git_broken/ 
+outputs/
