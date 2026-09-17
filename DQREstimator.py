@@ -10,7 +10,7 @@ import copy
 from pathlib import Path
 from vanilla_qr_nn import VanillaQRNN
 from single_layer_qr import SingleLayerPerceptronQR
-from sklearn.cluster import KMeans
+# from sklearn.cluster import KMeans
 from matplotlib import patches
 from matplotlib.patches import Ellipse
 from scipy.stats import chi2
@@ -21,6 +21,7 @@ import os
 import numpy as np
 import matplotlib.pyplot as plt
 import torch
+
 
 y_grid_size_per_y_dim = {
     2: 1e5,
@@ -40,18 +41,19 @@ project_dir = Path(__file__).resolve().parent
 base_dir = project_dir.parent
 
 # now append your target subfolder
-target_path = base_dir / "mqr-master" / "mqr-master"
-
-sys.path.append(str(target_path))
+# target_path = base_dir / "mqr-master" / "mqr-master"
+# print(target_path)
+# sys.path.append(str(target_path))
 # sys.path.append(r"C:\Users\owner\Documents\PythonCode\mqr-master\mqr-master")
 
-from losses import multivariate_qr_loss, predict_y, calc_y_u
-from helper import generate_directions, get_grid, get_grid_borders_and_stride
-from plot_helper import plot_samples
-from utils.q_model_ens import MultivariateQuantileModel
+# from losses import multivariate_qr_loss, predict_y, calc_y_u
+# from helper import generate_directions, get_grid, get_grid_borders_and_stride
+# from plot_helper import plot_samples
+# from utils.q_model_ens import MultivariateQuantileModel
 from transformations import ConditionalIdentityTransform
 from torch.utils.data import DataLoader, TensorDataset
 import matplotlib.pyplot as plt
+
 
 def plot_all_three_same_ax(
     Y,
@@ -213,6 +215,11 @@ def plot_all_three_same_ax(
     ax.set_ylabel("x[1]")
 
     plt.show()
+def calc_y_u(u_list, y):
+    num_pts = len(y)
+    Y_u = torch.bmm(u_list.unsqueeze(0).repeat(num_pts, 1, 1), y.unsqueeze(-1)).squeeze(-1)
+
+    return Y_u
 def mahalanobis_elliptical_region(x, x_hat, Sigma, x_train, alpha,bin_id_per_t, plot_data = None):
     """
     Two-sided Mahalanobis region for time-series:
@@ -548,9 +555,13 @@ def rectangular_no_learning(x_hat, alpha, d):
     # Mean
     mean_x = x_hat[:, :d]
 
+    # # Full covariance
+    # sigma_full = (
+    #         x_hat[:, d:] ** 2
+    # ).reshape(-1, d, d)
     # Full covariance
     sigma_full = (
-            x_hat[:, d:] ** 2
+            x_hat[:, d:]
     ).reshape(-1, d, d)
 
     # Diagonal variances
@@ -646,7 +657,15 @@ class DQREstimator:
                  dropout=0.0,
                  device=None,
                  patience=100,
-                 debug_plot=False):
+                 debug_plot=False,
+                 architecture=1,
+                 H1=64,
+                 HGRU=256,
+                 H2=64,
+                 nGRU=1):
+
+
+
         """
         Wrapper class for training and inference of DQR
         using MultivariateQuantileModel from mqr.
@@ -690,12 +709,24 @@ class DQREstimator:
         self.eval_losses = []
         self.tau = None  # will be set in fit
 
+        self.architecture = architecture
+        self.H1 = H1
+        self.HGRU = HGRU
+        self.H2 = H2
+        self.nGRU = nGRU
+        self.all_time = []
+
     # -----------------------
     # TRAIN
     # -----------------------
     # -----------------------
     # TRAIN
     # -----------------------
+    def count_parameters(self):
+        return sum(
+            p.numel() for p in self.model.parameters()
+            if p.requires_grad
+        )
     def fit(self, x_train, y_train, x_val, y_val, tau, log_wandb=True):
         """
         Train VanillaQRNN on (x_train, y_train)
@@ -1186,7 +1217,7 @@ class DQREstimator:
                     )
 
                     total_loss = total_loss + loss_t
-                    per_t_train_losses.append(loss_t.item())
+                    # per_t_train_losses.append(loss_t.item())
 
                 loss = total_loss / T
                 loss.backward()
@@ -1281,12 +1312,34 @@ class DQREstimator:
         num_u_actual = u_list.shape[0]
         tau_list = torch.full((num_u_actual,), float(tau), device=device)
 
-        self.model = VanillaQRNN(
-            input_size=x_dim,
-            num_u=num_u_actual,
-            hidden_dimensions=self.hs,
-            dropout=self.dropout
-        ).to(device)
+        # self.model = VanillaQRNN(
+        #     input_size=x_dim,
+        #     num_u=num_u_actual,
+        #     hidden_dimensions=self.hs,
+        #     dropout=self.dropout
+        # ).to(device)
+        if self.architecture == 1:
+
+            self.model = VanillaQRNN(
+                input_size=x_dim,
+                num_u=num_u_actual,
+                architecture=1,
+                hidden_dimensions=self.hs,
+                dropout=self.dropout,
+            ).to(device)
+
+        else:
+
+            self.model = VanillaQRNN(
+                input_size=x_dim,
+                num_u=num_u_actual,
+                architecture=2,
+                H1=self.H1,
+                HGRU=self.HGRU,
+                H2=self.H2,
+                nGRU=self.nGRU,
+                dropout=self.dropout,
+            ).to(device)
         #loading
         if load_path is not None:
             checkpoint = torch.load(load_path)
@@ -1347,6 +1400,8 @@ class DQREstimator:
                 total_loss = 0.0
                 per_t_train_losses = []
 
+                self.model.init_hidden(self.batch_size,self.device)
+
                 for t in range(T):
                     x_t = x_batch[:, :, t]  # (B, d_x)
                     y_t = y_batch[:, :, t]  # (B, d_y)
@@ -1359,7 +1414,7 @@ class DQREstimator:
                     )
 
                     total_loss = total_loss + loss_t
-                    per_t_train_losses.append(loss_t.item())
+                    # per_t_train_losses.append(loss_t.item())
 
                 loss = total_loss / T
                 loss.backward()
@@ -1370,6 +1425,7 @@ class DQREstimator:
             ep_tr_loss = float(np.mean(ep_train_loss))
             self.train_losses.append(ep_tr_loss)
 
+            self.model.init_hidden(self.batch_size,self.device)
             self.model.eval()
             with torch.no_grad():
                 val_losses_t = []
@@ -1495,21 +1551,20 @@ class DQREstimator:
 
             mu = x[:, :d]
 
-            Sigma = x[:, d:].reshape(-1, d, d) ** 2
-            self.model.lambda_hat = self.lambda_hat
+            # Sigma = x[:, d:].reshape(-1, d, d) ** 2
+            Sigma = x[:, d:].reshape(-1, d, d)
+            self.model.lambda_hat = self.lambda_hat_used
             results = self.model.is_in_region(
                 y=y,
                 mu=mu,
                 Sigma=Sigma
             )
-
             pred_all = None
 
             return results, pred_all
 
         # Regular DQR model
         else:
-
             return self._is_in_region(x, y)
     def _is_in_region(self, x, y, verbose=True):
         """
@@ -1562,12 +1617,13 @@ class DQREstimator:
             for i in idx_range:
                 xi = x[i:min(i + batch_size, x.shape[0])]
                 yi = y[i:min(i + batch_size, y.shape[0])]
-
+                # self.model.init_hidden(self.batch_size,self.device)
                 pred_yi = self.model(xi)  # [batch, num_u]
-                pred_yi = pred_yi  - self.lambda_hat # calibration
+                pred_yi = pred_yi  - self.lambda_hat_used # calibration
                 Y_ui = calc_y_u(self.u_list.to(xi.device), yi)  # [batch, num_u]
 
                 res_i = (Y_ui >= pred_yi).all(dim=1).unsqueeze(1)
+
 
                 results.append(res_i.detach())
                 pred_all.append(pred_yi.detach())
@@ -1762,6 +1818,11 @@ class DQREstimator:
 
         z_grid_width = (z_grid[:, 0].max() - z_grid[:, 0].min())#/stride[0]
         z_grid_height = (z_grid[:, 1].max() - z_grid[:, 1].min())#/stride[1]
+        if z_grid.shape[1] == 3:
+            z_grid_depth = z_grid[:, 2].max() - z_grid[:, 2].min()
+            grid_volume =  z_grid_width * z_grid_height * z_grid_depth
+        else:
+            grid_volume = z_grid_width * z_grid_height
 
         z_in_region_mask, _ = self.is_in_region(
             x.repeat(len(z_grid), 1),
@@ -1775,7 +1836,7 @@ class DQREstimator:
         z_in_region_mask = z_in_region_mask.squeeze(1).bool()
         z_in_region = z_grid[z_in_region_mask]
 
-        covered_area = torch.ceil(z_grid_width*z_grid_height*(len(z_in_region)/len(z_grid)))
+        covered_area = torch.ceil(grid_volume*(len(z_in_region)/len(z_grid)))
 
         # if plot_flag:
         #
@@ -1877,7 +1938,8 @@ class DQREstimator:
         d = y_cal.shape[1]
         mu_cal = x_hat[:, :d]
         # diagonal covariance
-        Sigma_cal = (x_hat[:, d:] ** 2).reshape(-1, d, d)
+        # Sigma_cal = (x_hat[:, d:] ** 2).reshape(-1, d, d)
+        Sigma_cal = (x_hat[:, d:]).reshape(-1, d, d)
         n = y_cal.shape[0]
 
         B = 1.0
@@ -2115,7 +2177,9 @@ class DQREstimator:
 
     def inference_new(self, x_test, y_test, y_train, before_cal_flag=False):
         if before_cal_flag:
-            self.lambda_hat = torch.tensor(0.0)
+            self.lambda_hat_used = torch.tensor(0.0)
+        else:
+            self.lambda_hat_used = self.lambda_hat
         device = self.device
         x = x_test.to(device).float()
         y_train = y_train.to(device).float()
@@ -2255,4 +2319,100 @@ class DQREstimator:
 
         return 1 - mean_cal_cov, mean_total_covered_area
 
+    def calibrate_crc_trajectory(self, X_cal_seq, y_cal_seq, alpha):
+        """
+        Trajectory-wise conformal calibration.
+
+        X_cal_seq: [N, input_dim, T]
+        y_cal_seq: [N, state_dim, T]
+        """
+
+        residuals_per_t = []
+        T = y_cal_seq.shape[-1]
+
+        for t in range(T):
+            X_cal_t = X_cal_seq[:, :, t]
+            y_cal_t = y_cal_seq[:, :, t]
+
+            y_pred_t = self.model(X_cal_t)
+
+            Y_ui_t = calc_y_u(
+                self.u_list.to(y_cal_t.device),
+                y_cal_t
+            )
+
+            R_t = (y_pred_t - Y_ui_t).max(dim=1).values
+            residuals_per_t.append(R_t)
+
+        residuals_per_t = torch.stack(residuals_per_t, dim=1)
+
+        trajectory_residuals = residuals_per_t.max(dim=1).values
+
+        self.candidate_residuals, _ = torch.sort(trajectory_residuals)
+
+        n = self.candidate_residuals.shape[0]
+
+        index = int(np.ceil((1 - alpha) * (n + 1))) - 1
+        index = min(max(index, 0), n - 1)
+
+        self.lambda_hat = self.candidate_residuals[index]
+
+        return self.lambda_hat
+
+    def calibrate_ellip_crc_trajectory(self, x_hat_seq, y_cal_seq):
+        """
+        Trajectory-wise calibration for elliptical regions.
+
+        x_hat_seq: [N, input_dim, T]
+            input_dim = d + d*d
+            first d entries are mu
+            remaining d*d entries are sqrt/covariance representation
+
+        y_cal_seq: [N, d, T]
+
+        Computes:
+            R_i = max_t (dist_{i,t} - r0)
+
+        Then sets one global lambda_hat for all time steps.
+        """
+
+        d = y_cal_seq.shape[1]
+        T = y_cal_seq.shape[-1]
+
+        residuals_per_t = []
+
+        with torch.no_grad():
+            for t in range(T):
+                x_hat_t = x_hat_seq[:, :, t]
+                y_cal_t = y_cal_seq[:, :, t]
+
+                mu_cal_t = x_hat_t[:, :d]
+
+                # Sigma_cal_t = (x_hat_t[:, d:] ** 2).reshape(-1, d, d)
+                Sigma_cal_t = (x_hat_t[:, d:]).reshape(-1, d, d)
+                dist_t = self.model.mahalanobis_distance(
+                    y_cal_t,
+                    mu_cal_t,
+                    Sigma_cal_t
+                )
+
+                residual_t = dist_t - self.model.r0  # [N]
+                residuals_per_t.append(residual_t)
+
+            residuals_per_t = torch.stack(residuals_per_t, dim=1)  # [N, T]
+
+            trajectory_residuals = residuals_per_t.max(dim=1).values  # [N]
+
+            self.Residuals = trajectory_residuals
+            self.candidate_residuals = torch.sort(trajectory_residuals).values
+
+            index = int(
+                np.ceil((1 - self.model.alpha) * (self.candidate_residuals.shape[0] + 1))
+            ) - 1
+
+            index = min(max(index, 0), self.candidate_residuals.shape[0] - 1)
+
+            self.lambda_hat = self.candidate_residuals[index]
+
+            return self.lambda_hat
 

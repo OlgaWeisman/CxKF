@@ -3,11 +3,12 @@ from datetime import datetime
 
 import torch
 import matplotlib.pyplot as plt
+import numpy as np
 
 # =====================================================
 # Choose scenario
 # =====================================================
-scenario = "linear"
+scenario = "nonlinear_partial"
 # Options:
 # "linear"
 # "linear_nonGaussian"
@@ -80,14 +81,14 @@ elif scenario == "nonlinear":
     model_kind = "nonlinear"
     scenario_name = "non-Linear"
 
-elif scenario == "nonlinear_varF":
-    from Extended_sysmdl_varF import SystemModel
-    from EKF_EstOnly_nonLinearF_test import EKFTest
+elif scenario == "nonlinear_partial":
+    from Extended_sysmdl import SystemModel
+    from EKF_EstOnly_test import EKFTest
 
-    path_model = "Simulations/nonLinear_varF_1D"
+    path_model = "Simulations/nonLinear_1D"
     filter_type = "EKF"
-    model_kind = "nonlinear_varF"
-    scenario_name = "non-Linear-varF"
+    model_kind = "nonlinear_partial"
+    scenario_name = "non-Linear-partial"
 
 else:
     raise ValueError(f"Unknown scenario: {scenario}")
@@ -108,7 +109,7 @@ from Extended_data_cp import (
 
 from CP_test import compute_gaussian_quantiles, clalibration_residual_quantiles
 
-from model import f, h
+from model import f, h, f_tylor
 
 if model_kind == "linear":
     from parameters import (
@@ -151,6 +152,17 @@ def build_system_model(q, r):
                 "1D",
                 device=dev,
             )
+            sys_model_partial = SystemModel(
+                f_tylor,
+                q,
+                h,
+                r,
+                T,
+                T_test,
+                m,
+                n,
+                "1D",
+            )
         except TypeError:
             sys_model = SystemModel(
                 f,
@@ -163,9 +175,21 @@ def build_system_model(q, r):
                 n,
                 "1D",
             )
+            sys_model_partial = SystemModel(
+                f_tylor,
+                q,
+                h,
+                r,
+                T,
+                T_test,
+                m,
+                n,
+                "1D",
+            )
 
     sys_model.InitSequence(m1x_0, m2x_0)
-    return sys_model
+    sys_model_partial.InitSequence(m1x_0, m2x_0)
+    return sys_model,sys_model_partial
 
 
 def run_filter(sys_model, train_input, train_target):
@@ -175,8 +199,8 @@ def run_filter(sys_model, train_input, train_target):
     if scenario == "nonlinear":
         return EKFTest(sys_model, train_input, train_target)
 
-    if scenario == "nonlinear_varF":
-        return EKFTest(sys_model, train_input)
+    if scenario == "nonlinear_partial":
+        return EKFTest(sys_model, train_input, train_target)
 
     raise ValueError(f"Unsupported filter configuration: {scenario}")
 
@@ -208,7 +232,7 @@ for index in range(len(r2)):
     # True model
     r = torch.sqrt(r2[index])
     q = torch.sqrt(q2[index])
-    sys_model = build_system_model(q, r)
+    sys_model, sys_model_partial = build_system_model(q, r)
 
     # =====================================================
     # Data generation/loading
@@ -238,14 +262,14 @@ for index in range(len(r2)):
 
     current_data_file = dataFolderName + dataFileName[index]
 
-    print("Start Data Gen")
-    DataGen(
-        sys_model,
-        current_data_file,
-        T,
-        T_test,
-        randomInit=False,
-    )
+    # print("Start Data Gen")
+    # DataGen(
+    #     sys_model,
+    #     current_data_file,
+    #     T,
+    #     T_test,
+    #     randomInit=False,
+    # )
 
     print("Data Load")
     [
@@ -265,17 +289,30 @@ for index in range(len(r2)):
     # Filter evaluation
     # =====================================================
     print("Evaluate Filter")
-    x_array_train, sigma_array_train = run_filter(
-        sys_model,
-        train_input,
-        train_target,
-    )
 
-    x_array_cv, sigma_array_cv = run_filter(
-        sys_model,
-        cv_input,
-        cv_target,
-    )
+    if scenario == "nonlinear_partial":
+        x_array_train, sigma_array_train = run_filter(
+            sys_model_partial,
+            train_input,
+            train_target,
+        )
+        x_array_cv, sigma_array_cv = run_filter(
+            sys_model_partial,
+            cv_input,
+            cv_target,
+        )
+    else:
+        x_array_train, sigma_array_train = run_filter(
+            sys_model,
+            train_input,
+            train_target,
+        )
+
+        x_array_cv, sigma_array_cv = run_filter(
+            sys_model,
+            cv_input,
+            cv_target,
+        )
     sigma_for_quantiles_cv = prepare_sigma_for_quantiles(sigma_array_cv)
     if sigma_for_quantiles_cv.dim() < 3:
         sigma_for_quantiles_cv = sigma_for_quantiles_cv.unsqueeze(1)
@@ -318,8 +355,13 @@ for index in range(len(r2)):
     # Conformal calibration
     # =====================================================
     title_value = 10 * torch.log10(1 / r2[index]).item()
-
+    # for test
+    n_used = min(1000, x_array_train.shape[0])
+    n_cal = int(np.ceil(0.8 * n_used))
+    rho = 0.99
+    weights = rho ** np.arange(n_cal, 0, -1)
     [c, w, s] = clalibration_residual_quantiles(
+        train_input,
         x_array_train,
         sigma_for_quantiles,
         train_target,
@@ -334,7 +376,8 @@ for index in range(len(r2)):
         title_value,
         scenario_name,
         torch.cat([x_array_cv, sigma_for_quantiles_cv], dim=1),
-        cv_target
+        cv_target,
+        cv_input,
     )
 
     print("Done scenario:", scenario)

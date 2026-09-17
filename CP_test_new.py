@@ -41,10 +41,101 @@ def metric_calculation(curr_test_target, intervals):
     w = intervals
     return c, s, w
 
+
+def weighted_conformal_quantile(scores, alpha, weights=None):
+    """Weighted split-conformal quantile for non-exchangeable data.
+
+    Parameters
+    ----------
+    scores : array-like, shape (n_cal,) or (n_cal, T)
+        Calibration nonconformity scores.
+    alpha : float
+        Target miscoverage level.
+    weights : array-like, optional
+        Nonnegative weights for the calibration points, optionally followed by
+        the test-point weight. Thus, its length may be n_cal or n_cal + 1.
+        When omitted, all weights (including the test weight) equal one.
+
+    Returns
+    -------
+    np.ndarray or float
+        A weighted (1-alpha) threshold for every time index. The threshold is
+        infinity whenever the calibration weights have total normalized mass
+        below 1-alpha, exactly as in ``splitCP_LS``.
+    """
+    scores = np.asarray(scores)
+    if scores.ndim == 1:
+        scores = scores[:, None]
+        squeeze_result = True
+    elif scores.ndim == 2:
+        squeeze_result = False
+    else:
+        raise ValueError("scores must have shape (n_cal,) or (n_cal, T)")
+
+    n_cal = scores.shape[0]
+    if weights is None or len(weights) == 0:
+        weights = np.ones(n_cal + 1, dtype=float)
+    else:
+        weights = np.asarray(weights, dtype=float).reshape(-1)
+        if len(weights) == n_cal:
+            weights = np.r_[weights, 1.0]
+        elif len(weights) != n_cal + 1:
+            raise ValueError(
+                f"weights must have length {n_cal} or {n_cal + 1}, "
+                f"but received {len(weights)}"
+            )
+
+    if np.any(weights < 0):
+        raise ValueError("weights must be nonnegative")
+    if np.sum(weights) <= 0:
+        raise ValueError("at least one weight must be positive")
+
+    weights_calib = weights[:-1] / np.sum(weights)
+    thresholds = np.full(scores.shape[1], np.inf, dtype=float)
+
+    if np.sum(weights_calib) >= 1 - alpha:
+        for t in range(scores.shape[1]):
+            order = np.argsort(scores[:, t])
+            cumulative_weight = np.cumsum(weights_calib[order])
+            threshold_index = np.searchsorted(
+                cumulative_weight, 1 - alpha, side="left"
+            )
+            thresholds[t] = scores[order[threshold_index], t]
+
+    return thresholds[0] if squeeze_result else thresholds
+def sequential_weighted_thresholds(scores, alpha, rho=0.99):
+    """
+    scores has shape: (n_calibration_trajectories, T)
+
+    Q_t is calculated using all scores from times 0,...,t-1.
+    """
+    scores = np.asarray(scores)
+    n_cal, T = scores.shape
+
+    thresholds = np.full(T, np.inf)
+
+    for t in range(1, T):
+        # All calibration scores from previous times 0,...,t-1
+        past_scores = scores[:, :t].reshape(-1)
+
+        # Old times receive smaller weights; recent times receive larger weights
+        time_weights = rho ** np.arange(t, 0, -1)
+
+        # Apply the same temporal weights to every calibration trajectory
+        past_weights = np.tile(time_weights, n_cal)
+
+        thresholds[t] = weighted_conformal_quantile(
+            past_scores,
+            alpha,
+            weights=past_weights,
+        )
+
+    return thresholds
+
 def clalibration_residual_quantiles(train_input_long,train_KF_output_long, train_Sigma_KF_output_long,train_target_long ,q_low,q_hi, J_T, alpha, title_value, q_half,q_low_aT,q_hi_aT,snr,scenario,train_cqkf_input,train_cqr_target,train_cqr_input):
     plot_flag = True
     # List of algorithms
-    algorithms = ["CQR_max","CQR_trained","CQKF_trained"]#["CQKF_TWj","CQR_Twj","CQR_trained","CQKF_trained","CQR", "Gaussian only", "CQR_max", "CQKF-Bonf-sw","Gaussian only long", "time-series non Union", "Union-TS"]#["CQR", "Gaussian only"]##["CQR", "Gaussian only", "CQR_max", "CQR_alpha", "time-series non Union", "CQR_r", "dist-split"]
+    algorithms = ["CQR","CQR_TWj","CQR_trained","CQKF_trained","CQKF_TWj","CQKF-nonexchangeable"]#["CQKF_TWj","CQR_Twj","CQR_trained","CQKF_trained","CQR", "Gaussian only", "CQR_max", "CQKF-Bonf-sw","Gaussian only long", "time-series non Union", "Union-TS"]#["CQR", "Gaussian only"]##["CQR", "Gaussian only", "CQR_max", "CQR_alpha", "time-series non Union", "CQR_r", "dist-split"]
     #loop on trails
     train_KF_output = train_KF_output_long[:1000, :]
     train_target = train_target_long[:1000, :]
@@ -78,6 +169,14 @@ def clalibration_residual_quantiles(train_input_long,train_KF_output_long, train
     c_cqkf_tw = np.empty([J_T, num_of_tests, T])
     s_cqkf_tw = np.empty([J_T, num_of_tests])
     w_cqkf_tw = np.empty([J_T, num_of_tests, T, 2])
+
+    c_cqkf_nonexchangeable = np.empty([J_T, num_of_tests, T])
+    s_cqkf_nonexchangeable = np.empty([J_T, num_of_tests])
+    w_cqkf_nonexchangeable = np.empty([J_T, num_of_tests, T, 2])
+
+    c_cqkf_nonexchangeable_ref = np.empty([J_T, num_of_tests, T])
+    s_cqkf_nonexchangeable_ref = np.empty([J_T, num_of_tests])
+    w_cqkf_nonexchangeable_ref = np.empty([J_T, num_of_tests, T, 2])
 
     c_long = np.empty([J_T, num_of_tests_long, T])
     s_long = np.empty([J_T, num_of_tests_long])
@@ -258,7 +357,6 @@ def clalibration_residual_quantiles(train_input_long,train_KF_output_long, train
         curr_train_q_hi = curr_q_hi[:num_of_calib]
         curr_train_q_half = curr_q_half[:num_of_calib]
 
-
         curr_train_q_low_trained = q_low_trained[:num_of_calib]
         curr_train_q_hi_trained = q_hi_trained[:num_of_calib]
 
@@ -318,6 +416,42 @@ def clalibration_residual_quantiles(train_input_long,train_KF_output_long, train
             intervals_cqkf_trained[:, :, 1] = curr_test_q_hi_trained + np.tile(test_err[1, :], (num_of_tests, 1))
             # Calculate metric result
             [c_cqkf_trained[j], s_cqkf_trained[j], w_cqkf_trained[j]] = metric_calculation(curr_test_target, intervals_cqkf_trained)
+        if "CQKF-nonexchangeable" in algorithms:
+            # Weighted split-conformal correction. The final weight is the
+            # test-point weight and therefore has no associated score.
+            weighted_test_err = sequential_weighted_thresholds(
+                err_trained,
+                alpha=alpha,
+                rho=0.99,
+            )
+            intervals_cqkf_nonexchangeable = np.zeros((num_of_tests, T, 2))
+            intervals_cqkf_nonexchangeable[:, :, 0] = (
+                curr_test_q_low_trained - weighted_test_err[None, :]
+            )
+            intervals_cqkf_nonexchangeable[:, :, 1] = (
+                curr_test_q_hi_trained + weighted_test_err[None, :]
+            )
+            [
+                c_cqkf_nonexchangeable[j],
+                s_cqkf_nonexchangeable[j],
+                w_cqkf_nonexchangeable[j],
+            ] = metric_calculation(
+                curr_test_target, intervals_cqkf_nonexchangeable
+            )
+            intervals_cqkf_nonexchangeable_ref = np.zeros((num_of_tests, T, 2))
+            intervals_cqkf_nonexchangeable_ref[:, :, 0] = (
+                curr_test_q_low_trained
+            )
+            intervals_cqkf_nonexchangeable_ref[:, :, 1] = (
+                curr_test_q_hi_trained
+            )
+            [
+                c_cqkf_nonexchangeable_ref[j],
+                s_cqkf_nonexchangeable_ref[j],
+                w_cqkf_nonexchangeable_ref[j],
+            ] = metric_calculation(
+                curr_test_target, intervals_cqkf_nonexchangeable_ref
+            )
         if "CQKF_TWj" in algorithms:
             # time seq Union Bound
             alpha_err_trained = np.max(err_trained , axis=1)
@@ -550,6 +684,20 @@ def clalibration_residual_quantiles(train_input_long,train_KF_output_long, train
     s_mean_cqkf_tw = np.mean(s_cqkf_tw)*100
     w_mean_cqkf_tw = np.mean(np.mean(np.diff(w_cqkf_tw), 1), 0)
 
+    c_mean_cqkf_nonexchangeable = np.mean(
+        np.mean(c_cqkf_nonexchangeable, 1), 0
+    ) * 100
+    s_mean_cqkf_nonexchangeable = np.mean(s_cqkf_nonexchangeable) * 100
+    w_mean_cqkf_nonexchangeable = np.mean(
+        np.mean(np.diff(w_cqkf_nonexchangeable), 1), 0
+    )
+    c_mean_cqkf_nonexchangeable_ref = np.mean(
+        np.mean(c_cqkf_nonexchangeable_ref, 1), 0
+    ) * 100
+    s_mean_cqkf_nonexchangeable_ref = np.mean(s_cqkf_nonexchangeable_ref) * 100
+    w_mean_cqkf_nonexchangeable_ref = np.mean(
+        np.mean(np.diff(w_cqkf_nonexchangeable_ref), 1), 0
+    )
     c_mean_long = np.mean(np.mean(c_long, 1), 0)*100
     s_mean_long = np.mean(s_long)*100
     w_mean_long = np.mean(np.mean(np.diff(w_long), 1), 0)
@@ -595,6 +743,8 @@ def clalibration_residual_quantiles(train_input_long,train_KF_output_long, train
                   C_mean=c_mean_trained.mean(), C_svd=c_mean_trained.std(), S=s_mean_trained, WI_mean=w_mean_trained.mean(), WI_svd=w_mean_trained.std())
     writer.append(algo="CQKF-Tjw", snr_db=snr,
                   C_mean=c_mean_cqkf_tw.mean(), C_svd=c_mean_cqkf_tw.std(), S=s_mean_cqkf_tw, WI_mean=w_mean_cqkf_tw.mean(), WI_svd=w_mean_cqkf_tw.std())
+    writer.append(algo="CQKF-nonexchangeable", snr_db=snr,
+                  C_mean=c_mean_cqkf_nonexchangeable.mean(), C_svd=c_mean_cqkf_nonexchangeable.std(), S=s_mean_cqkf_nonexchangeable, WI_mean=w_mean_cqkf_nonexchangeable.mean(), WI_svd=w_mean_cqkf_nonexchangeable.std())
     writer.append(algo="CQR-Tjw", snr_db=snr,
                   C_mean=c_mean_cqr_tw.mean(), C_svd=c_mean_cqr_tw.std(), S=s_mean_cqr_tw, WI_mean=w_mean_cqr_tw.mean(), WI_svd=w_mean_cqr_tw.std())
 

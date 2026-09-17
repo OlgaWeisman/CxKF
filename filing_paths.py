@@ -6,4 +6,4 @@ path_model_1D = 'Simulations/nonLinear_1D/'
 path_model_varF = 'Simulations/nonLinear_varF_1D/'
 
 
-path_model = path_model_Toy
+path_model = path_model_1D

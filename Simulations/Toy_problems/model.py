@@ -13,6 +13,13 @@ def f(x):
 def h(x):
     return alpha_obs * (beta_obs*x + a_obs)**2
 
+def f_tylor(x):
+    phi = torch.as_tensor(phi_mot, dtype=x.dtype, device=x.device)
+    return (
+            alpha_mot * torch.sin(phi)
+            + a_mot
+            + alpha_mot * beta_mot * torch.cos(phi) * x
+    )
 def fInacc(x):
     return alpha_mot_mod * torch.sin(beta_mot_mod * x + phi_mot_mod) + a_mot_mod
 

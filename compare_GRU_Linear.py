@@ -10,24 +10,23 @@ from datetime import datetime
 from DQREstimator import DQREstimator, rectangular_no_learning
 from DR_CP_test import DRCPMDN
 from mahalanobis_elliptical_region_no_learning import MahalanobisEllipticalRegionNoLearning
-from ScenarioMetricWrite import ScenarioMetricsWriter
-import time
+
 # ======================================================
 # User configuration
 # ======================================================
-scenario = "nonlonear-partial"   # options: "linear", "nonlinear", "lorenz", "nonlonear-partial"
-model_type = "EKF"       # options: "KF", "EKF", "UKF"
-coverage_mode = "trajectory" #"trajectory"
+scenario = "linear"   # options: "linear", "nonlinear", "lorenz"
+model_type = "KF"       # options: "KF", "EKF", "UKF"
+coverage_mode = "sample" #"trajectory"
 use_train_and_calib_for_no_learning = True
 
 T = 50
 T_test = 50
 alpha = 0.05
-Epochs_num = 3
-train_model = False      # True: train and save models, False: load saved models
+Epochs_num = 1
+train_model = True      # True: train and save models, False: load saved models
 load_path = None
 
-r2 = torch.tensor([30])   # for linear you may prefer torch.tensor([1])
+r2 = torch.tensor([10])   # for linear you may prefer torch.tensor([1])
 vdB = -20                # q2/r2 in dB
 use_cuda = False
 
@@ -68,7 +67,7 @@ if scenario == "linear":
     sys_model_name = "Linear"
 
 elif scenario == "nonlinear":
-    path_model = "Simulations/Pendulum/"
+    path_model = "Simulations/Toy_problems/"
     sys.path.insert(1, path_model)
 
     from Extended_sysmdl import SystemModel
@@ -76,27 +75,6 @@ elif scenario == "nonlinear":
     from EKF_EstOnly_test import EKFTest
     from UKF_test import UKFTest
     from model import f, h
-    from parameters import m1x_0, m2x_0, m, n
-
-    data_folder = path_model
-    data_files = [
-        "1x1_rq-1010_T100.pt",
-        "1x1_rq020_T100.pt",
-        "1x1_rq1030_T100.pt",
-        "1x1_rq2040_T100.pt",
-        "1x1_rq3050_T100.pt",
-    ]
-    dim = m
-    sys_model_name = "Toy"
-elif scenario == "nonlonear-partial":
-    path_model = "Simulations/Pendulum/"#"Simulations/Toy_problems/"
-    sys.path.insert(1, path_model)
-
-    from Extended_sysmdl import SystemModel
-    from Extended_data_cp import DataGen, DataLoader
-    from EKF_EstOnly_test import EKFTest
-    from UKF_test import UKFTest
-    from model import f, h, f_tylor
     from parameters import m1x_0, m2x_0, m, n
 
     data_folder = path_model
@@ -140,8 +118,6 @@ os.makedirs(path_model, exist_ok=True)
 # ======================================================
 # Helpers
 # ======================================================
-def count_trainable_parameters(model):
-    return sum(p.numel() for p in model.parameters() if p.requires_grad)
 def plot_inference_regions(save_dir="inference_containers"):
 
     files = sorted(
@@ -209,8 +185,8 @@ def plot_inference_regions(save_dir="inference_containers"):
         zorder=10,
     )
 
-    plt.xlabel(r"$y_1$", fontsize=14)
-    plt.ylabel(r"$y_2$", fontsize=14)
+    plt.xlabel(r"$x_1$", fontsize=14)
+    plt.ylabel(r"$x_2$", fontsize=14)
     plt.title("Prediction Regions", fontsize=16)
     # plt.axis("equal")
     plt.grid(True)
@@ -327,7 +303,7 @@ q2 = torch.mul(v, r2)
 for index in range(len(r2)):
     print("1/r2 [dB]: ", 10 * torch.log10(1 / r2[index]))
     print("1/q2 [dB]: ", 10 * torch.log10(1 / q2[index]))
-    snr_db = 10 * torch.log10(1 / r2[index])
+
     r = torch.sqrt(r2[index])
     q = torch.sqrt(q2[index])
 
@@ -340,9 +316,6 @@ for index in range(len(r2)):
     else:
         sys_model = SystemModel(f, q, h, r, T, T_test, m, n, sys_model_name, device=dev)
         sys_model.InitSequence(m1x_0, m2x_0)
-        if "partial" in scenario:
-            sys_model_partial = SystemModel(f_tylor, q, h, r, T, T_test, m, n, sys_model_name, device=dev)
-            sys_model_partial.InitSequence(m1x_0, m2x_0)
 
     # -----------------------------
     # Data generation/loading
@@ -363,14 +336,9 @@ for index in range(len(r2)):
     # -----------------------------
     # KF/EKF/UKF outputs
     # -----------------------------
-    if "partial" in scenario:
-        x_array_train, sigma_array_train, x_array_cv, sigma_array_cv, x_array_test, sigma_array_test = get_filter_outputs(
-            sys_model_partial, train_input, train_target, cv_input, cv_target, test_input, test_target
-        )
-    else:
-        x_array_train, sigma_array_train, x_array_cv, sigma_array_cv, x_array_test, sigma_array_test = get_filter_outputs(
-            sys_model, train_input, train_target, cv_input, cv_target, test_input, test_target
-        )
+    x_array_train, sigma_array_train, x_array_cv, sigma_array_cv, x_array_test, sigma_array_test = get_filter_outputs(
+        sys_model, train_input, train_target, cv_input, cv_target, test_input, test_target
+    )
     N = x_array_test.shape[0]
     Test_samples = int(test_target.shape[0]*0.2)
     # -----------------------------
@@ -382,10 +350,6 @@ for index in range(len(r2)):
     error_NPDQR_before_cal = torch.empty(T, Epochs_num)
     IW_NPQR_before_cal = torch.empty(T, Epochs_num)
     s_dqr_before_cal = torch.empty(Test_samples, T, Epochs_num)
-
-    error_NPDQR_obs = torch.empty(T, Epochs_num)
-    IW_NPQR_obs = torch.empty(T, Epochs_num)
-    s_dqr_obs = torch.empty(Test_samples, T, Epochs_num)
 
     error_NPDQR_small = torch.empty(T, Epochs_num)
     IW_NPQR_small = torch.empty(T, Epochs_num)
@@ -411,84 +375,100 @@ for index in range(len(r2)):
     error_drcp= torch.empty(T, Epochs_num)
     IW_drcp = torch.empty(T, Epochs_num)
     s_drcp = torch.empty(Test_samples, T, Epochs_num)
-
-    error_drcp_obs= torch.empty(T, Epochs_num)
-    IW_drcp_obs = torch.empty(T, Epochs_num)
-    s_drcp_obs = torch.empty(Test_samples, T, Epochs_num)
     # -----------------------------
     # DQR inputs
     # -----------------------------
+    # #with sqrt
+    # x_input_train = torch.cat(
+    #     [x_array_train, torch.sqrt(sigma_array_train.flatten(start_dim=1, end_dim=2))],
+    #     dim=1,
+    # )
+    # x_input_cv = torch.cat(
+    #     [x_array_cv, torch.sqrt(sigma_array_cv.flatten(start_dim=1, end_dim=2))],
+    #     dim=1,
+    # )
     x_input_train = torch.cat(
-        [x_array_train, sigma_array_train.flatten(start_dim=1, end_dim=2)],
+        [x_array_train, (sigma_array_train.flatten(start_dim=1, end_dim=2))],
         dim=1,
     )
     x_input_cv = torch.cat(
-        [x_array_cv, sigma_array_cv.flatten(start_dim=1, end_dim=2)],
+        [x_array_cv, (sigma_array_cv.flatten(start_dim=1, end_dim=2))],
         dim=1,
     )
-    # # DRCP with (\hats, Sigma) inputs
-    mdn = DRCPMDN(
-        input_dim=x_input_train.shape[1], #train_input.shape[1],#x_input_train.shape[1],
-        output_dim=train_target.shape[1],
-        mixture_size=10,
-        hidden_size=100,
-        num_layers=3,
-        learning_rate=1e-4,
-        batch_size=128,
-        num_ep=500,
-    )
-    model_name = f"dcp_model_{scenario}_{model_type}_T{T}_r2{make_safe_name(r2[index])}_alpha{alpha:.3f}.pt"
-    current_load_path = os.path.join(path_model, model_name) if not train_model else None
-    mdn.fit(
-        x_train=x_input_train,#train_input,#x_input_train,
-        y_train=train_target,
-        x_val=x_input_cv,#x_input_cv,
-        y_val=cv_target,
-        load_path=current_load_path,
-    )
-
-    if train_model:
-        torch.save(
-            {
-                "model_state_dict": mdn.model.state_dict(),
-            },
-            os.path.join(path_model, model_name),
-        )
-    #DCP with observation input
-
-    mdn_obs = DRCPMDN(
-        input_dim=train_input.shape[1],
-        output_dim=train_target.shape[1],
-        mixture_size=5,
-        hidden_size=100,
-        num_layers=3,
-        learning_rate=1e-4,
-        batch_size=128,
-        num_ep=500,
-    )
-    model_name = f"dcp_obs_model_{scenario}_{model_type}_T{T}_r2{make_safe_name(r2[index])}_alpha{alpha:.3f}.pt"
-    current_load_path = os.path.join(path_model, model_name) if not train_model else None
-    mdn_obs.fit(
-        x_train=train_input,
-        y_train=train_target,
-        x_val=cv_input,
-        y_val=cv_target,
-        load_path=current_load_path,
-    )
-    if train_model:
-        torch.save(
-            {
-                "model_state_dict": mdn_obs.model.state_dict(),
-            },
-            os.path.join(path_model, model_name),
-        )
-
+    # mdn = DRCPMDN(
+    #     input_dim=x_array_train.shape[1], #train_input.shape[1],#x_input_train.shape[1],
+    #     output_dim=train_target.shape[1],
+    #     mixture_size=10,
+    #     hidden_size=100,
+    #     num_layers=3,
+    #     learning_rate=1e-4,
+    #     batch_size=128,
+    #     num_ep=500,
+    # )
+    #
+    # mdn.fit(
+    #     x_train=x_array_train,#train_input,#x_input_train,
+    #     y_train=train_target,
+    #     x_val=x_array_cv,#x_input_cv,
+    #     y_val=cv_target,
+    # )
     # -----------------------------
     # DQR models
     # -----------------------------
-    dqr = DQREstimator(
-        hs_str="[128,128]",
-        num_ep=500,
+    # dqr = DQREstimator(
+    #     hs_str="[128,128]",
+    #     num_ep=500,
+    #     num_u=128,
+    #     batch_size=128,
+    #     lr=1e-3,
+    #     wd=1e-4,
+    #     dropout=0.01,
+    #     device="cpu",
+    #     patience=100,
+    #     debug_plot=False,
+    # )
+    architecture = 1  # 1 = Linear, 2 = GRU
+
+    if architecture == 1:
+
+        dqr = DQREstimator(
+            hs_str="[128,128]",
+            num_ep=500,
+            num_u=128,
+            batch_size=128,
+            lr=1e-3,
+            wd=1e-4,
+            dropout=0.01,
+            device="cpu",
+            patience=100,
+            debug_plot=False,
+            architecture=1,
+        )
+
+    else:
+
+        dqr = DQREstimator(
+            num_ep=300,
+            num_u=128,
+            batch_size=64,
+            lr=1e-3,
+            wd=1e-4,
+            dropout=0.01,
+            device="cpu",
+            patience=100,
+            debug_plot=False,
+
+            architecture=2,
+
+            # GRU architecture
+            H1=128,  # Input linear layer
+            HGRU=512,  # GRU hidden dimension
+            H2=128,  # Hidden linear layer
+            nGRU=1,  # Number of GRU layers
+        )
+
+    dqr_gru = DQREstimator(
+        num_ep=1000,
         num_u=128,
         batch_size=128,
         lr=1e-3,
@@ -497,21 +477,15 @@ for index in range(len(r2)):
         device="cpu",
         patience=100,
         debug_plot=False,
-    )
 
-    dqr_obs = DQREstimator(
-        hs_str="[128,128]",
-        num_ep=500,
-        num_u=128,
-        batch_size=128,
-        lr=1e-3,
-        wd=1e-4,
-        dropout=0.01,
-        device="cpu",
-        patience=100,
-        debug_plot=False,
-    )
+        architecture=2,
 
+        # GRU architecture
+        H1=64,  # Input linear layer
+        HGRU=128,  # GRU hidden dimension
+        H2=64,  # Hidden linear layer
+        nGRU=1,  # Number of GRU layers
+    )
     # -----------------------------
     # No-learning elliptical model
     # -----------------------------
@@ -549,14 +523,13 @@ for index in range(len(r2)):
     current_load_path = os.path.join(path_model, model_name) if not train_model else None
 
     with wandb.init(
-        project=scenario,
+        project="Linear Gaussian",
         name=f"DQR_{scenario}_{model_type}_{strTime}",
         group=group_name,
         job_type="DQR",
         config={**common_config, "method": "DQR"},
         reinit="finish_previous",
     ):
-
         dqr.fit_nonLinear_forall_seq(
             x_input_train,
             train_target,
@@ -566,31 +539,54 @@ for index in range(len(r2)):
             log_wandb=True,
             load_path=current_load_path,
         )
-
         if train_model:
             save_dqr_model(dqr, model_name)
 
+    # ======================================================
+    # Train/load DQR Gaussian correction
+    # ======================================================
+    model_name = f"dqr_fixing_model_{scenario}_{model_type}_T{T}_r2{make_safe_name(r2[index])}_alpha{alpha:.3f}.pt"
+    current_load_path = os.path.join(path_model, model_name) if not train_model else None
+
+    # with wandb.init(
+    #     project="Linear Gaussian",
+    #     name=f"DQR_fixing_{scenario}_{model_type}_{strTime}",
+    #     group=group_name,
+    #     job_type="Gaussian_correction",
+    #     config={**common_config, "method": "Gaussian_correction"},
+    #     reinit="finish_previous",
+    # ):
+        # dqr_fixing.fit_gaussian_correction_forall_seq(
+        #     x_input_train,
+        #     train_target,
+        #     x_input_cv,
+        #     cv_target,
+        #     tau=alpha / 7,
+        #     log_wandb=True,
+        #     load_path=current_load_path,
+        # )
+        # if train_model:
+        #     save_dqr_model(dqr_fixing, model_name)
 
     wandb.finish()
 
     # # ======================================================
-    # # Train/load obs DQR
+    # # Train/load small DQR
     # # ======================================================
-    model_name = f"dqr_obs_model_{scenario}_{model_type}_T{T}_r2{make_safe_name(r2[index])}_alpha{alpha:.3f}.pt"
-    current_load_path = os.path.join(path_model, model_name) if not train_model else None
+    # model_name = f"dqr_small_model_{scenario}_{model_type}_T{T}_r2{make_safe_name(r2[index])}_alpha{alpha:.3f}.pt"
+    # current_load_path = os.path.join(path_model, model_name) if not train_model else None
     #
-    dqr_obs.fit_nonLinear_forall_seq(
-        train_input,
+    dqr_gru.fit_nonLinear_forall_seq(
+        x_input_train,
         train_target,
-        cv_input,
+        x_input_cv,
         cv_target,
         tau=alpha / 7,
         log_wandb=False,
         load_path=current_load_path,
     )
-
-    if train_model:
-        save_dqr_model(dqr_obs, model_name)
+    # if train_model:
+    #     save_dqr_model(dqr_small, model_name)
 
     # ======================================================
     # Calibration/testing loop
@@ -619,13 +615,21 @@ for index in range(len(r2)):
         # ======================================================
         # Build inputs for all time steps
         # ======================================================
-
+        # x_input_calib = torch.cat(
+        #     [hat_x_calib, torch.sqrt(sigma_calib_flat)],
+        #     dim=1,
+        # )  # [N_cal, input_dim, T]
+        #
+        # x_input_test = torch.cat(
+        #     [hat_x_test, torch.sqrt(sigma_test_flat)],
+        #     dim=1,
+        # )  # [N_test, input_dim, T]
         x_input_test = torch.cat(
-            [hat_x_test, sigma_test_flat],
+            [hat_x_test, (sigma_test_flat)],
             dim=1,
         )  # [N_test, input_dim, T]
         x_input_calib = torch.cat(
-            [hat_x_calib, sigma_calib_flat],
+            [hat_x_calib, (sigma_calib_flat)],
             dim=1,
         )  # [N_cal, input_dim, T]
         if use_train_and_calib_for_no_learning:
@@ -650,25 +654,14 @@ for index in range(len(r2)):
         # Trajectory-wise calibration: do this ONCE
         # ======================================================
         if coverage_mode == "trajectory":
-            mdn.calibrate_trajectory(
-                x_input_calib,
-                target_x_calib,
-                alpha
-            )
-
-            mdn_obs.calibrate_trajectory(
-                calib_obs,
-                target_x_calib,
-                alpha
-            )
             dqr.calibrate_crc_trajectory(
                 x_input_calib,
                 target_x_calib,
                 alpha
             )
 
-            dqr_obs.calibrate_crc_trajectory(
-                calib_obs,
+            dqr_small.calibrate_crc_trajectory(
+                x_input_calib,
                 target_x_calib,
                 alpha
             )
@@ -682,108 +675,217 @@ for index in range(len(r2)):
                 target_rect_elip,
 
             )
-        for t in range(0, T):
+        for t in [45]:#range(0, T, 5):
             x_input_calib_per_t = x_input_calib[:, :, t]
             x_input_test_per_t = x_input_test[:, :,t]
 
             if coverage_mode == "sample":
-                mdn.calibrate(x_input_calib_per_t, target_x_calib[:, :, t], alpha)#calib_obs[:,:,t], target_x_calib[:, :, t], alpha)#(x_input_calib_per_t, target_x_calib[:, :, t], alpha)
-                # mdn_obs.calibrate(calib_obs[:,:,t], target_x_calib[:, :, t], alpha)
-                # dqr.calibrate_crc(x_input_calib_per_t, target_x_calib[:, :, t], alpha)
-                # dqr_obs.calibrate_crc(calib_obs[:, :, t], target_x_calib[:, :, t], alpha)
-                # # Rectangular no-learning
-                # dqr_rect.calibrate_crc(
-                #     x_input_rect_elip[:, :, t],
-                #     target_rect_elip[:, :, t],
-                #     alpha
-                # )
-                # # Elliptical no-learning
-                # dqr_elip.calibrate_ellip_crc(
-                #     x_input_rect_elip[:, :, t],
-                #     target_rect_elip[:, :, t],
-                # )
+                # mdn.calibrate(hat_x_calib[:, :, t], target_x_calib[:, :, t], alpha)#calib_obs[:,:,t], target_x_calib[:, :, t], alpha)#(x_input_calib_per_t, target_x_calib[:, :, t], alpha)
+
+                dqr.calibrate_crc(x_input_calib_per_t, target_x_calib[:, :, t], alpha)
+                dqr_gru.calibrate_crc(x_input_calib_per_t, target_x_calib[:, :, t], alpha)
+                # dqr_small.calibrate_crc(x_input_calib_per_t, target_x_calib[:, :, t], alpha)
+                # Rectangular no-learning
+                dqr_rect.calibrate_crc(
+                    x_input_rect_elip[:, :, t],
+                    target_rect_elip[:, :, t],
+                    alpha
+                )
+                # Elliptical no-learning
+                dqr_elip.calibrate_ellip_crc(
+                    x_input_rect_elip[:, :, t],
+                    target_rect_elip[:, :, t],
+                )
 
             # DQR
 
-            # error_NPDQR[t, epochs], IW_NPQR[t, epochs],s_dqr[:, t, epochs] = dqr.inference_new(
+            error_NPDQR[t, epochs], IW_NPQR[t, epochs],s_dqr[:, t, epochs] = dqr.inference_new(
+                x_input_test_per_t, target_x_test[:, :, t], target_x_test[:, :, t], False
+            )
+            error_NPDQR_before_cal[t, epochs], IW_NPQR_before_cal[t, epochs], s_dqr_before_cal[:, t, epochs] = dqr.inference_new(
+                x_input_test_per_t, target_x_test[:, :, t], target_x_test[:, :, t], True
+            )
+
+            #DQR GRU
+            error_NPDQR_small[t, epochs], IW_NPQR_small[t, epochs],s_dqr[:, t, epochs] = dqr_gru.inference_new(
+                x_input_test_per_t, target_x_test[:, :, t], target_x_test[:, :, t], False
+            )
+            error_NPDQR_small_before_cal[t, epochs], IW_NPQR_small_before_cal[t, epochs], s_dqr_before_cal[:, t, epochs] = dqr_gru.inference_new(
+                x_input_test_per_t, target_x_test[:, :, t], target_x_test[:, :, t], True
+            )
+
+            # # Small DQR
+            #
+            # error_NPDQR_small[t, epochs], IW_NPQR_small[t, epochs], s_dqr_small[:, t, epochs]  = dqr_small.inference_new(
             #     x_input_test_per_t, target_x_test[:, :, t], target_x_test[:, :, t], False
             # )
-            #
-            # error_NPDQR_obs[t, epochs], IW_NPQR_obs[t, epochs], s_dqr_obs[:, t, epochs]  = dqr_obs.inference_new(
-            #     test_obs[:,:,t], target_x_test[:, :, t], target_x_test[:, :, t],False
-            # )
-            #
-            # error_rect[t, epochs], IW_rect[t, epochs], s_rect[:, t, epochs] = dqr_rect.inference_new(
-            #     x_input_test_per_t, target_x_test[:, :, t], target_x_test[:, :, t], False
-            # )
-            #
-            # error_elip_crc[t, epochs], IW_elip_crc[t, epochs], s_elip[:, t, epochs] = dqr_elip.inference_new(
-            #     x_input_test_per_t, target_x_test[:, :, t], target_x_test[:, :, t], False
-            # )
-            # error_elip_crc_before_cal[t, epochs], IW_elip_crc_before_cal[t, epochs], s_elip_before_cal[:, t, epochs] = dqr_elip.inference_new(
+            # error_NPDQR_small_before_cal[t, epochs], IW_NPQR_small_before_cal[t, epochs], s_dqr_small_before_cal[:, t, epochs] = dqr_small.inference_new(
             #     x_input_test_per_t, target_x_test[:, :, t], target_x_test[:, :, t], True
             # )
-            error_drcp[t, epochs], IW_drcp[t, epochs], s_drcp[:, t, epochs] = mdn.inference_new(
-               x_input_test_per_t, target_x_test[:, :, t], target_x_test[:, :, t], False
+
+
+            error_rect[t, epochs], IW_rect[t, epochs], s_rect[:, t, epochs] = dqr_rect.inference_new(
+                x_input_test_per_t, target_x_test[:, :, t], target_x_test[:, :, t], False
             )
-            # error_drcp_obs[t, epochs], IW_drcp_obs[t, epochs], s_drcp_obs[:, t, epochs] = mdn_obs.inference_new(
-            #    test_obs[:,:,t], target_x_test[:, :, t], target_x_test[:, :, t], False
+            error_rect_before_cal[t, epochs], IW_rect_before_cal[t, epochs], s_rect_before_cal[:, t, epochs] = dqr_rect.inference_new(
+                x_input_test_per_t, target_x_test[:, :, t], target_x_test[:, :, t], True
+            )
+
+
+            error_elip_crc[t, epochs], IW_elip_crc[t, epochs], s_elip[:, t, epochs] = dqr_elip.inference_new(
+                x_input_test_per_t, target_x_test[:, :, t], target_x_test[:, :, t], False
+            )
+            error_elip_crc_before_cal[t, epochs], IW_elip_crc_before_cal[t, epochs], s_elip_before_cal[:, t, epochs] = dqr_elip.inference_new(
+                x_input_test_per_t, target_x_test[:, :, t], target_x_test[:, :, t], True
+            )
+            # error_drcp[t, epochs], IW_drcp[t, epochs], s_drcp[:, t, epochs] = mdn.inference_new(
+            #    hat_x_test[:, :, t], target_x_test[:, :, t], target_x_test[:, :, t], False
             # )
+            # test_obs[:,:,t], target_x_test[:, :, t], target_x_test[:, :, t], False)
+            #    x_input_test_per_t, target_x_test[:, :, t], target_x_test[:, :, t], False
+            # )
+            if epochs == 0 and t % 5 == 0:
+                plot_inference_regions("inference_containers")
 
-            # if epochs == 0 and t % 5 == 0:
-            #     plot_inference_regions("inference_containers")
-    writer = ScenarioMetricsWriter(
-        scenario=scenario,
-        coverage_mode = coverage_mode,
-        outdir="outputs"
-    )
-    writer.append_metrics(
-        algo="DQR-CPKF-SW",
-        snr_db=snr_db,
-        C=error_NPDQR.mean(dim=1),
-        S=(s_dqr.sum(dim=1) > 0).float().mean(),
-        WI=IW_NPQR.mean(dim=1),
-    )
-    writer.append_metrics(
-        algo="DQR-SW",
-        snr_db = snr_db,
-        C=error_NPDQR_obs.mean(dim=1),
-        S=(s_dqr_obs.sum(dim=1) > 0).float().mean(),
-        WI=IW_NPQR_obs.mean(dim=1),
-    )
-    writer.append_metrics(
-        algo="Elliptical-CPKF-SW",
-        snr_db = snr_db,
-        C=error_elip_crc.mean(dim=1),
-        S=(s_elip.sum(dim=1) > 0).float().mean(),
-        WI=IW_elip_crc.mean(dim=1),
-    )
-    writer.append_metrics(
-        algo="Elliptical-SW",
-        snr_db = snr_db,
-        C=error_elip_crc_before_cal.mean(dim=1),
-        S=(s_elip_before_cal.sum(dim=1) > 0).float().mean(),
-        WI=IW_elip_crc_before_cal.mean(dim=1),
-    )
-    writer.append_metrics(
-        algo="Rec-CPKF-SW",
-        snr_db = snr_db,
-        C=error_rect.mean(dim=1),
-        S=(s_rect.sum(dim=1) > 0).float().mean(),
-        WI=IW_rect.mean(dim=1),
-    )
-    writer.append_metrics(
-        algo="drcp-CPKF-SW",
-        snr_db = snr_db,
-        C=error_drcp.mean(dim=1),
-        S=(s_drcp.sum(dim=1) > 0).float().mean(),
-        WI=IW_drcp.mean(dim=1),
-    )
-    writer.append_metrics(
-        algo="drcp-SW",
-        snr_db = snr_db,
-        C=error_drcp_obs.mean(dim=1),
-        S=(s_drcp_obs.sum(dim=1) > 0).float().mean(),
-        WI=IW_drcp_obs.mean(dim=1),
-    )
+    # ======================================================
+    # Average over epochs
+    # ======================================================
 
+    error_NPDQR = error_NPDQR.mean(dim=1)
+    IW_NPQR = IW_NPQR.mean(dim=1)
+    Traj_failure_dqr = s_dqr.sum(dim=1).mean()
+    error_NPDQR_before_cal = error_NPDQR_before_cal.mean(dim=1)
+    IW_NPQR_before_cal = IW_NPQR_before_cal.mean(dim=1)
+    Traj_failure_dqr_before_cal = s_dqr_before_cal.sum(dim=1).mean()
+    error_NPDQR_small = error_NPDQR_small.mean(dim=1)
+    IW_NPQR_small = IW_NPQR_small.mean(dim=1)
+    Traj_failure_dqr_small = s_dqr_small.sum(dim=1).mean()
+    error_NPDQR_small_before_cal = error_NPDQR_small_before_cal.mean(dim=1)
+    IW_NPQR_small_before_cal = IW_NPQR_small_before_cal.mean(dim=1)
+    Traj_failure_dqr_small_before_cal = s_dqr_small_before_cal.sum(dim=1).mean()
+    error_rect = error_rect.mean(dim=1)
+    IW_rect = IW_rect.mean(dim=1)
+    Traj_failure_rect = s_rect.sum(dim=1).mean()
+    error_rect_before_cal = error_rect_before_cal.mean(dim=1)
+    IW_rect_before_cal = IW_rect_before_cal.mean(dim=1)
+    Traj_failure_rect_before_cal = s_rect_before_cal.sum(dim=1).mean()
+    error_elip_crc = error_elip_crc.mean(dim=1)
+    IW_elip_crc = IW_elip_crc.mean(dim=1)
+    Traj_failure_elip = s_elip.sum(dim=1).mean()
+    error_elip_crc_before_cal = error_elip_crc_before_cal.mean(dim=1)
+    IW_elip_crc_before_cal = IW_elip_crc_before_cal.mean(dim=1)
+    Traj_failure_elip_before_cal = s_elip_before_cal.sum(dim=1).mean()
+    error_drcp = error_drcp.mean(dim=1)
+    IW_drcp= IW_drcp.mean(dim=1)
+    Traj_failure_drcp = s_drcp.sum(dim=1).mean()
+    # ======================================================
+    # Convert to numpy
+    # ======================================================
+    err_dqr = torch.as_tensor(error_NPDQR).cpu().numpy()
+    iw_dqr = torch.as_tensor(IW_NPQR).cpu().numpy()
+    traj_dqr = torch.as_tensor(Traj_failure_dqr).cpu().item()
+    err_drcp = torch.as_tensor(error_drcp).cpu().numpy()
+    iw_drcp = torch.as_tensor(IW_drcp).cpu().numpy()
+    traj_drcp = torch.as_tensor(Traj_failure_drcp).cpu().item()
+    err_dqr_before = torch.as_tensor(error_NPDQR_before_cal).cpu().numpy()
+    iw_dqr_before = torch.as_tensor(IW_NPQR_before_cal).cpu().numpy()
+    traj_dqr_before = torch.as_tensor(Traj_failure_dqr_before_cal).cpu().item()
+    err_dqr_small = torch.as_tensor(error_NPDQR_small).cpu().numpy()
+    iw_dqr_small = torch.as_tensor(IW_NPQR_small).cpu().numpy()
+    traj_dqr_small = torch.as_tensor(Traj_failure_dqr_small).cpu().item()
+    err_dqr_small_before = torch.as_tensor(error_NPDQR_small_before_cal).cpu().numpy()
+    iw_dqr_small_before = torch.as_tensor(IW_NPQR_small_before_cal).cpu().numpy()
+    traj_dqr_small_before = torch.as_tensor(Traj_failure_dqr_small_before_cal).cpu().item()
+    err_rect = torch.as_tensor(error_rect).cpu().numpy()
+    iw_rect = torch.as_tensor(IW_rect).cpu().numpy()
+    traj_rect = torch.as_tensor(Traj_failure_rect).cpu().item()
+    err_rect_before = torch.as_tensor(error_rect_before_cal).cpu().numpy()
+    iw_rect_before = torch.as_tensor(IW_rect_before_cal).cpu().numpy()
+    traj_rect_before = torch.as_tensor(Traj_failure_rect_before_cal).cpu().item()
+    err_elip = torch.as_tensor(error_elip_crc).cpu().numpy()
+    iw_elip = torch.as_tensor(IW_elip_crc).cpu().numpy()
+    traj_elip = torch.as_tensor(Traj_failure_elip).cpu().item()
+    err_elip_before = torch.as_tensor(error_elip_crc_before_cal).cpu().numpy()
+    iw_elip_before = torch.as_tensor(IW_elip_crc_before_cal).cpu().numpy()
+    traj_elip_before = torch.as_tensor(Traj_failure_elip_before_cal).cpu().item()
+    t_axis = np.arange(len(err_dqr))
+    # ======================================================
+    # Plot error
+    # ======================================================
+    plt.figure(figsize=(12, 6))
+    plt.plot(t_axis, err_dqr, color="green", linewidth=2, label="NP-DQR")
+    plt.plot(t_axis, err_dqr_before, color="green", linestyle="--", linewidth=2, label="NP-DQR Before Calibration")
+    plt.plot(t_axis, err_dqr_small, color="red", linewidth=2, label="NP-DQR Small")
+    plt.plot(t_axis, err_dqr_small_before, color="red", linestyle="--", linewidth=2, label="NP-DQR Small Before Calibration")
+    plt.plot(t_axis, err_rect, color="orange", linewidth=2, label="Rectangular")
+    plt.plot(t_axis, err_rect_before, color="orange", linestyle="--", linewidth=2, label="Rectangular Before Calibration")
+    plt.plot(t_axis, err_elip, color="blue", linewidth=2, label="Elliptical")
+    plt.plot(t_axis, err_elip_before, color="blue", linestyle="--", linewidth=2, label="Elliptical Before Calibration")
+    plt.plot(t_axis, err_drcp, color="black", linewidth=2, label="DR-CP")
+    plt.xlabel("Time step t")
+    plt.ylabel("Error")
+    plt.title(f"Error vs Time - {scenario} - {model_type}")
+    plt.grid(True)
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig(f"error_vs_time_{scenario}_{model_type}.png", dpi=200)
+    plt.show()
+    plt.close()
+    # ======================================================
+    # Plot coverage area
+    # ======================================================
+    plt.figure(figsize=(12, 6))
+    plt.plot(
+        t_axis, iw_dqr,
+        color="green", linewidth=2,
+        label=f"NP-DQR | Traj failure={traj_dqr:.4f}"
+    )
+    plt.plot(
+        t_axis, iw_drcp,
+        color="black", linewidth=2,
+        label=f"DR-CP | Traj failure={traj_drcp:.4f}"
+    )
+    plt.plot(
+        t_axis, iw_dqr_before,
+        color="green", linestyle="--", linewidth=2,
+        label=f"NP-DQR Before Cal | Traj failure={traj_dqr_before:.4f}"
+    )
+    plt.plot(
+        t_axis, iw_dqr_small,
+        color="red", linewidth=2,
+        label=f"NP-DQR Small | Traj failure={traj_dqr_small:.4f}"
+    )
+    plt.plot(
+        t_axis, iw_dqr_small_before,
+        color="red", linestyle="--", linewidth=2,
+        label=f"NP-DQR Small Before Cal | Traj failure={traj_dqr_small_before:.4f}"
+    )
+    plt.plot(
+        t_axis, iw_rect,
+        color="orange", linewidth=2,
+        label=f"Rectangular | Traj failure={traj_rect:.4f}"
+    )
+    plt.plot(
+        t_axis, iw_rect_before,
+        color="orange", linestyle="--", linewidth=2,
+        label=f"Rectangular Before Cal | Traj failure={traj_rect_before:.4f}"
+    )
+    plt.plot(
+        t_axis, iw_elip,
+        color="blue", linewidth=2,
+        label=f"Elliptical | Traj failure={traj_elip:.4f}"
+    )
+    plt.plot(
+        t_axis, iw_elip_before,
+        color="blue", linestyle="--", linewidth=2,
+        label=f"Elliptical Before Cal | Traj failure={traj_elip_before:.4f}"
+    )
+    plt.xlabel("Time step t")
+    plt.ylabel("Coverage Area")
+    plt.title(f"Coverage Area vs Time - {scenario} - {model_type}")
+    plt.grid(True)
+    plt.legend(fontsize=8)
+    plt.tight_layout()
+    plt.savefig(f"coverage_vs_time_{scenario}_{model_type}.png", dpi=200)
+    plt.show()
+    plt.close()

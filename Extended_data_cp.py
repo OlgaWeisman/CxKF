@@ -9,7 +9,7 @@ os.environ['KMP_DUPLICATE_LIB_OK'] = 'True'
 #######################
 
 # Number of Training Examples
-N_E = 1000 #Olga
+N_E = 10000 #Olga
 
 # Number of Cross Validation Examples
 N_CV = 100  # 100

@@ -26,6 +26,14 @@ a_mot = 0.01
 alpha_obs = 1
 beta_obs = 1
 a_obs = 0
+# alpha_mot = 3
+# beta_mot = 1.1
+# phi_mot = 0.1*math.pi
+# a_mot = 0.01
+#
+# alpha_obs = 1.0
+# beta_obs  = 1.0
+# a_obs     = 0.0
 
 # Noise Parameters
 sigma_q = 0.1
@@ -42,9 +50,13 @@ alpha_mot_mod = 1
 beta_mot_mod = 1
 phi_mot_mod = 0
 a_mot_mod = 0
-alpha_obs_mod = 1
-beta_obs_mod = 1
-a_obs_mod = 0
+# alpha_obs_mod = 1
+# beta_obs_mod = 1
+# a_obs_mod = 0
+
+alpha_obs_mod = 0.05
+beta_obs_mod = 0.03
+a_obs_mod = 1.0
 
 # Noise Parameters
 lambda_q_mod = 0.7

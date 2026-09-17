@@ -35,14 +35,31 @@ def f(x):
 def h(x):
     return torch.matmul(H_design,x)#.to(cuda0)
     #return toSpherical(x)
+def f_tylor(x):
+    g = 9.81
+    L = 1.1
 
+    theta = x[0]
+
+    # Taylor approximation of sin(theta), order 2
+    sin_taylor = theta
+
+    y = torch.zeros_like(x)
+    y[0] = x[0] + x[1] * delta_t
+    y[1] = x[1] - (g / L) * sin_taylor * delta_t
+
+    return y
 def fInacc(x):
     g = 9.81 # Gravitational Acceleration
     L = 1.1 # Radius of pendulum
-    result = [x[0]+x[1]*delta_t, x[1]-(g/L * torch.sin(x[0]))*delta_t]
-    result = torch.squeeze(torch.tensor(result))
+    # result = [x[0]+x[1]*delta_t, x[1]-(g/L * torch.sin(x[0]))*delta_t]
+    # result = torch.squeeze(torch.tensor(result))
     # print(result.size())
-    return result
+    # return result
+    y = torch.zeros_like(x)
+    y[0] = x[0] + x[1] * delta_t
+    y[1] = x[1] - (g/L) * torch.sin(x[0]) * delta_t
+    return y
 
 def hInacc(x):
     return torch.matmul(H_mod,x)

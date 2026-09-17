@@ -33,45 +33,152 @@ class LinearLayer(nn.Module):
     def forward(self, x):
         return self.layer(x)
 
-
 class VanillaQRNN(nn.Module):
-    def __init__(self, input_size,
+    def __init__(self,
+                 input_size,
                  num_u,
+                 architecture=1,
                  bias=True,
                  hidden_dimensions=[64, 64, 64],
                  use_bn=False,
                  actv_type='relu',
-                 dropout=0.0):
+                 dropout=0.0,
+                 H1=64,
+                 HGRU=256,
+                 H2=64,
+                 nGRU=1):
         super().__init__()
 
+        self.architecture = architecture
         self.num_u = num_u
-        self.fcs = nn.ModuleList()
 
-        if len(hidden_dimensions) == 0:
-            self.fcs.append(
-                LinearLayer(input_size, num_u, bias=bias,
-                            use_bn=False, actv_type=None, dropout=0.0)
-            )
-        else:
-            self.fcs.append(
-                LinearLayer(input_size, hidden_dimensions[0], bias=bias,
-                            use_bn=use_bn, actv_type=actv_type, dropout=dropout)
-            )
+        ####################################################
+        # Architecture 1 (UNCHANGED)
+        ####################################################
+        if architecture == 1:
 
-            for i in range(len(hidden_dimensions) - 1):
+            self.fcs = nn.ModuleList()
+
+            if len(hidden_dimensions) == 0:
                 self.fcs.append(
-                    LinearLayer(hidden_dimensions[i], hidden_dimensions[i + 1], bias=bias,
+                    LinearLayer(input_size, num_u, bias=bias,
+                                use_bn=False, actv_type=None, dropout=0.0)
+                )
+            else:
+                self.fcs.append(
+                    LinearLayer(input_size, hidden_dimensions[0], bias=bias,
                                 use_bn=use_bn, actv_type=actv_type, dropout=dropout)
                 )
 
-            self.fcs.append(
-                LinearLayer(hidden_dimensions[-1], num_u, bias=bias,
-                            use_bn=False, actv_type=None, dropout=0.0)
+                for i in range(len(hidden_dimensions) - 1):
+                    self.fcs.append(
+                        LinearLayer(hidden_dimensions[i],
+                                    hidden_dimensions[i + 1],
+                                    bias=bias,
+                                    use_bn=use_bn,
+                                    actv_type=actv_type,
+                                    dropout=dropout)
+                    )
+
+                self.fcs.append(
+                    LinearLayer(hidden_dimensions[-1],
+                                num_u,
+                                bias=bias,
+                                use_bn=False,
+                                actv_type=None,
+                                dropout=0.0)
+                )
+
+        ####################################################
+        # Architecture 2 (NEW)
+        ####################################################
+        elif architecture == 2:
+
+            self.hn = None
+
+            self.input_layer = LinearLayer(
+                input_size,
+                H1,
+                bias=bias,
+                use_bn=False,
+                actv_type="relu",
+                dropout=dropout,
+            )
+
+            self.gru = nn.GRU(
+                input_size=H1,
+                hidden_size=HGRU,
+                num_layers=nGRU,
+                batch_first=False,
+                dropout= dropout,
+            )
+
+            self.hidden_layer = LinearLayer(
+                HGRU,
+                H2,
+                bias=bias,
+                use_bn=False,
+                actv_type="relu",
+                dropout=0,
+            )
+
+            self.output_layer = LinearLayer(
+                H2,
+                num_u,
+                bias=bias,
+                use_bn=False,
+                actv_type=None,
+                dropout=0.0,
+            )
+
+        else:
+            raise ValueError("architecture must be 1 or 2")
+
+    def init_hidden(self, batch_size, device):
+        if self.architecture == 2:
+            self.hn = torch.zeros(
+                self.gru.num_layers,
+                batch_size,
+                self.gru.hidden_size,
+                device=device,
             )
 
     def forward(self, x):
-        for layer in self.fcs:
-            x = layer(x)
+
+        ####################################################
+        # Architecture 1 (UNCHANGED)
+        ####################################################
+        if self.architecture == 1:
+            for layer in self.fcs:
+                x = layer(x)
+            return x
+
+        ####################################################
+        # Architecture 2 (NEW)
+        ####################################################
+        # x shape: [batch_size, input_size]
+
+        # Input layer
+        x = self.input_layer(x)
+
+        # [B,H1] -> [1,B,H1]
+        gru_in = x.unsqueeze(0)
+
+        # Initialize hidden state automatically
+        if self.hn is None or self.hn.shape[1] != x.shape[0]:
+            self.init_hidden(x.shape[0], x.device)
+        # GRU
+        gru_out, self.hn = self.gru(gru_in,self.hn)
+
+        # [1,B,HGRU] -> [B,HGRU]
+        gru_out = gru_out.squeeze(0)
+
+        # Hidden layer
+        x = self.hidden_layer(gru_out)
+
+        # Output layer
+        x = self.output_layer(x)
+
         return x
 
     def loss(self, y, x, u_list, tau_list):
