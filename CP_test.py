@@ -44,7 +44,7 @@ def metric_calculation(curr_test_target, intervals):
 def clalibration_residual_quantiles(train_input_long,train_KF_output_long, train_Sigma_KF_output_long,train_target_long ,q_low,q_hi, J_T, alpha, title_value, q_half,q_low_aT,q_hi_aT,snr,scenario,train_cqkf_input,train_cqr_target,train_cqr_input):
     plot_flag = True
     # List of algorithms
-    algorithms = ["CQR_max","CQR_trained","CQKF_trained"]#["CQKF_TWj","CQR_Twj","CQR_trained","CQKF_trained","CQR", "Gaussian only", "CQR_max", "CQKF-Bonf-sw","Gaussian only long", "time-series non Union", "Union-TS"]#["CQR", "Gaussian only"]##["CQR", "Gaussian only", "CQR_max", "CQR_alpha", "time-series non Union", "CQR_r", "dist-split"]
+    algorithms = ["CQKF_trained","CQKF_TWj","CQR_Twj","CQR_trained"]#["CQKF_TWj","CQR_Twj","CQR_trained","CQKF_trained","CQR", "Gaussian only", "CQR_max", "CQKF-Bonf-sw","Gaussian only long", "time-series non Union", "Union-TS"]#["CQR", "Gaussian only"]##["CQR", "Gaussian only", "CQR_max", "CQR_alpha", "time-series non Union", "CQR_r", "dist-split"]
     #loop on trails
     train_KF_output = train_KF_output_long[:1000, :]
     train_target = train_target_long[:1000, :]
@@ -339,7 +339,7 @@ def clalibration_residual_quantiles(train_input_long,train_KF_output_long, train
             intervals_cqr_trained[:, :, 1] = curr_obs_test_q_hi_trained + np.tile(test_err[1, :], (num_of_tests, 1))
             # Calculate metric result
             [c_trained[j], s_trained[j], w_trained[j]] = metric_calculation(curr_test_target, intervals_cqr_trained)
-        if "CQR_TWj" in algorithms:
+        if "CQR_Twj" in algorithms:
             # time seq Union Bound
             alpha_err_trained = np.max(err_obs_trained , axis=1)
             cal_scores = {0: np.sort(alpha_err_trained, 0)[::-1]}

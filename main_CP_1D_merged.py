@@ -13,7 +13,7 @@ scenario = "nonlinear_partial"
 # "linear"
 # "linear_nonGaussian"
 # "nonlinear"
-# "nonlinear_varF"
+# "nonlinear_partial"
 
 T = 100
 T_test = 100

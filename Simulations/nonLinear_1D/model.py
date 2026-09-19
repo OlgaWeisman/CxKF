@@ -9,7 +9,7 @@ def f(x, alpha=0.07, K=2, p=4):
     # return x + alpha * x * (1 - (x / K)**p)
     return torch.sin(x)#3*torch.sin(1.1*x + 0.1*math.pi)
 def f_tylor(x):
-    return (x - x**3 / 6)
+   return x #(x - x**3 / 6)
 def h(x):
     return x**2 #0.07*(0.01*x + 1)**2
 
